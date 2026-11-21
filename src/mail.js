@@ -124,4 +124,9 @@ export function teamAlert({ subject, html, to }) {
   return send(dest, `[DENTAL] ${subject}`, layout(subject, `${hero('🔔', '#eff6ff', subject)}<div style="color:${B.text};font-size:14.5px;line-height:1.75">${html}</div>`), 'admin')
 }
 
-export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert }
+// Envoi « brut » (relais depuis l'app clinique : codes de connexion, etc.) — garde le HTML de l'app.
+export async function sendRaw({ to, subject, html, text }) {
+  return send(to, subject, html || esc(text || '').replace(/\n/g, '<br>'), 'client')
+}
+
+export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert, sendRaw }

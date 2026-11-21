@@ -328,6 +328,18 @@ export async function runMaintenance() {
   return { reminded, blocked, clinics: clinics.length }
 }
 
+// Relais e-mail pour l'app clinique (la clé Resend reste côté serveur).
+export async function relayMail({ clinic_id, fingerprint, to, subject, text, html }) {
+  if (!clinic_id || !to || !/^[^@\s]+@[^@\s]+$/.test(String(to))) throw err(400, 'Requête invalide')
+  const clinic = (await q('select status from saas.clinics where id=$1', [clinic_id])).rows[0]
+  if (!clinic || clinic.status === 'suspended') throw err(403, 'Clinique non autorisée')
+  const host = (await q("select 1 from saas.hosts where clinic_id=$1 and fingerprint=$2 and status='active'", [clinic_id, fingerprint])).rows[0]
+  if (!host) throw err(403, 'Poste non reconnu')
+  await mail.sendRaw({ to, subject: subject || 'DENTAL', html, text })
+  await event(clinic_id, 'relay_mail', { to: String(to).replace(/^(.{1,2})[^@]*(@.*)$/, '$1•••$2') })
+  return { ok: true }
+}
+
 export async function listEvents(limit = 100) {
   return (await q(`select e.*, c.name clinic_name from saas.events e left join saas.clinics c on c.id=e.clinic_id order by e.created_at desc limit $1`, [Math.min(500, limit)])).rows
 }

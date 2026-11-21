@@ -45,6 +45,7 @@ const limiter = rateLimit({ windowMs: 60000, max: 120 })
 app.post('/api/activate', limiter, wrap(async (req, res) => res.json(await core.activate(req.body || {}))))
 app.post('/api/check', limiter, wrap(async (req, res) => res.json(await core.check(req.body || {}))))
 app.post('/api/backups/report', limiter, wrap(async (req, res) => res.json(await core.recordBackup(req.body || {}))))
+app.post('/api/relay-mail', rateLimit({ windowMs: 60000, max: 30 }), wrap(async (req, res) => res.json(await core.relayMail(req.body || {}))))
 // Inscription d'essai (utilisée plus tard par le site vitrine)
 app.post('/api/signup', limiter, wrap(async (req, res) => {
   const c = await core.createClinic(req.body || {})
