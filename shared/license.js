@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  DENTAL LIGHT — Moteur de licences (signature Ed25519, 100 % hors ligne)
+//  DENTAL — Moteur de licences (signature Ed25519, 100 % hors ligne)
 // ═══════════════════════════════════════════════════════════════════════════
 //
 //  Une licence est un JETON SIGNÉ. Il contient tout ce qu'il faut (clinique,

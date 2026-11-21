@@ -1,6 +1,6 @@
+# NE JAMAIS versionner la clé privée ni les secrets du SaaS
 keys/license-private.pem
+keys/*.private.pem
 .env
 node_modules/
-data/
 *.log
-.DS_Store

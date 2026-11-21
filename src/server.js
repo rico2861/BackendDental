@@ -1,5 +1,5 @@
 // ═══════════════════════════════════════════════════════════════════════════
-//  DENTAL LIGHT — Console SaaS (serveur)
+//  DENTAL — Console SaaS (serveur)
 //  Sert : l'API d'administration (/admin/api/*, protégée) + le frontend admin,
 //  ET les endpoints appelés par l'app Dental (/api/activate, /api/check).
 // ═══════════════════════════════════════════════════════════════════════════
@@ -104,7 +104,7 @@ if (fs.existsSync(path.join(WEB, 'index.html'))) {
   app.use(express.static(WEB, { setHeaders: (res, f) => { if (/\.(js|css|html)$/.test(f)) res.setHeader('Cache-Control', 'no-cache') } }))
   app.get('*', (req, res) => res.sendFile(path.join(WEB, 'index.html')))
 } else {
-  app.get('/', (req, res) => res.json({ service: 'DENTAL LIGHT — SaaS API', status: 'ok' }))
+  app.get('/', (req, res) => res.json({ service: 'DENTAL — SaaS API', status: 'ok' }))
 }
 
 export async function start() {

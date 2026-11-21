@@ -1,5 +1,5 @@
 -- ═══════════════════════════════════════════════════════════════════════════
---  DENTAL LIGHT — Base de la plateforme SaaS (console d'administration)
+--  DENTAL — Base de la plateforme SaaS (console d'administration)
 --  Postgres / Supabase. C'est la SOURCE DE VÉRITÉ côté serveur : qui est
 --  abonné, quelles licences sont émises, quels hôtes sont activés, l'état des
 --  sauvegardes et des paiements. L'app clinique, elle, ne voit jamais ces tables.

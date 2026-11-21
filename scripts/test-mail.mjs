@@ -28,7 +28,7 @@ ok('personnalisé (nom de la clinique)', /Cabinet Soleil/.test(welcome.html))
 ok('contient le code d’activation', welcome.html.includes(c.activation_code))
 ok('sujet avec le code', welcome.subject.includes(c.activation_code))
 ok('lien de téléchargement présent', /dental-light\.app/.test(welcome.html))
-ok('alerte équipe envoyée', sent.some(m => /\[DENTAL LIGHT\]/.test(m.subject)))
+ok('alerte équipe envoyée', sent.some(m => /\[DENTAL\]/.test(m.subject)))
 
 console.log('\n2) Paiement confirmé → reçu par e-mail')
 const pay = await core.createPayment({ clinic_id: c.id, method: 'virement', plan: '1y', amount: 15000, currency: 'HTG', reference: 'VIR1' })

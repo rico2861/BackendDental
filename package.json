@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "private": true,
   "type": "module",
-  "description": "DENTAL LIGHT — plateforme SaaS (console d'administration, serveur de licences, site vitrine).",
+  "description": "DENTAL — plateforme SaaS (console d'administration, serveur de licences, site vitrine).",
   "scripts": {
     "start": "node src/server.js",
     "keygen": "node scripts/keygen.js",
