@@ -1,0 +1,24 @@
+{
+  "name": "dental-light-saas",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "DENTAL LIGHT — plateforme SaaS (console d'administration, serveur de licences, site vitrine).",
+  "scripts": {
+    "start": "node src/server.js",
+    "keygen": "node scripts/keygen.js",
+    "test:license": "node scripts/test-license.js",
+    "test:trial": "node scripts/test-trial.js",
+    "test:console": "node scripts/test-console.mjs"
+  },
+  "dependencies": {
+    "@electric-sql/pglite": "^0.3.0",
+    "bcryptjs": "^2.4.3",
+    "cookie-parser": "^1.4.6",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "pg": "^8.13.1"
+  }
+}
