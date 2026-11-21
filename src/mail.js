@@ -124,9 +124,20 @@ export function teamAlert({ subject, html, to }) {
   return send(dest, `[DENTAL] ${subject}`, layout(subject, `${hero('🔔', '#eff6ff', subject)}<div style="color:${B.text};font-size:14.5px;line-height:1.75">${html}</div>`), 'admin')
 }
 
+// Rappel du code d'activation (récupération depuis la vitrine)
+export function codeReminder({ to, clinic, code }) {
+  const body = `${hero('🔑', '#f0fdfb', 'Votre code d’activation', esc(clinic))}
+    ${greet(clinic)}
+    ${para('Voici le code d’activation de votre clinique. Entrez-le dans le logiciel DENTAL pour activer chaque poste.')}
+    ${codeBox("Code d'activation", code)}
+    ${SITE() ? btn('Télécharger le logiciel', (env('DOWNLOAD_URL') || SITE())) : ''}
+    <p style="margin:18px 0 0;color:${B.muted};font-size:12.5px;text-align:center">Vous n’êtes pas à l’origine de cette demande ? Ignorez cet e-mail.</p>`
+  return send(to, 'Votre code d’activation DENTAL', layout('Votre code d’activation DENTAL', body), 'client')
+}
+
 // Envoi « brut » (relais depuis l'app clinique : codes de connexion, etc.) — garde le HTML de l'app.
 export async function sendRaw({ to, subject, html, text }) {
   return send(to, subject, html || esc(text || '').replace(/\n/g, '<br>'), 'client')
 }
 
-export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert, sendRaw }
+export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert, sendRaw, codeReminder }

@@ -46,6 +46,7 @@ app.post('/api/activate', limiter, wrap(async (req, res) => res.json(await core.
 app.post('/api/check', limiter, wrap(async (req, res) => res.json(await core.check(req.body || {}))))
 app.post('/api/backups/report', limiter, wrap(async (req, res) => res.json(await core.recordBackup(req.body || {}))))
 app.post('/api/relay-mail', rateLimit({ windowMs: 60000, max: 30 }), wrap(async (req, res) => res.json(await core.relayMail(req.body || {}))))
+app.post('/api/resend-code', rateLimit({ windowMs: 60000, max: 8 }), wrap(async (req, res) => res.json(await core.resendCode((req.body || {}).email))))
 // Inscription d'essai (utilisée plus tard par le site vitrine)
 app.post('/api/signup', limiter, wrap(async (req, res) => {
   const c = await core.createClinic(req.body || {})

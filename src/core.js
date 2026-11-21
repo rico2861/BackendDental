@@ -340,6 +340,18 @@ export async function relayMail({ clinic_id, fingerprint, to, subject, text, htm
   return { ok: true }
 }
 
+// Récupération du code d'activation par e-mail (depuis la vitrine). Ne révèle pas si le compte existe.
+export async function resendCode(email) {
+  const e = String(email || '').trim().toLowerCase()
+  if (!/^[^@\s]+@[^@\s]+$/.test(e)) throw err(400, 'E-mail invalide')
+  const c = (await q('select id, name, email, activation_code, status from saas.clinics where lower(email)=$1', [e])).rows[0]
+  if (c && c.activation_code && c.status !== 'suspended') {
+    safe(mail.codeReminder({ to: c.email, clinic: c.name, code: c.activation_code }))
+    await event(c.id, 'code_resent', {})
+  }
+  return { ok: true, message: 'Si un compte existe avec cet e-mail, le code vient d’être envoyé.' }
+}
+
 export async function listEvents(limit = 100) {
   return (await q(`select e.*, c.name clinic_name from saas.events e left join saas.clinics c on c.id=e.clinic_id order by e.created_at desc limit $1`, [Math.min(500, limit)])).rows
 }
