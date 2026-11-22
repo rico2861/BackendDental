@@ -12,6 +12,7 @@ import { clientToken } from './auth.js'
 import { PLAN_DURATIONS } from '../shared/license.js'
 import { moncash } from './moncash.js'
 import { mail } from './mail.js'
+import { putObject, presignGet, r2Ready } from './r2.js'
 
 const RETENTION_DAYS = 90   // données conservées 90 jours après blocage
 const safe = p => { try { return Promise.resolve(p).catch(e => console.error('[mail]', e.message)) } catch (e) { console.error('[mail]', e.message) } }
@@ -182,6 +183,62 @@ export async function requestVirement(clinicId, plan) {
   await event(clinicId, 'virement_requested', { payment_id: p.id, ref, plan })
   safe(mail.teamAlert({ subject: 'Virement en attente', html: `Clinique ${clinicId} — ${plan} — réf ${ref}` }))
   return { payment_id: p.id, reference: ref, ref, amount: pr[plan], currency: pr.currency }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  COMPTES BANCAIRES (configurés par l'admin, affichés aux clients) + PREUVES
+// ═══════════════════════════════════════════════════════════════════════════
+export async function listBankAccounts(activeOnly = false) {
+  return (await q(`select * from saas.bank_accounts ${activeOnly ? 'where active=true' : ''} order by created_at desc`)).rows
+}
+export async function addBankAccount({ bank_name, holder, number, currency = 'HTG', note }) {
+  if (!bank_name || !holder || !number) throw err(400, 'Banque, titulaire et n° de compte requis')
+  const r = (await q(`insert into saas.bank_accounts(bank_name,holder,number,currency,note) values ($1,$2,$3,$4,$5) returning *`, [bank_name, holder, number, currency, note || null])).rows[0]
+  await event(null, 'bank_account_added', { bank: bank_name })
+  return r
+}
+export async function updateBankAccount(id, patch = {}) {
+  const sets = [], vals = [id]
+  for (const [k, col] of [['bank_name', 'bank_name'], ['holder', 'holder'], ['number', 'number'], ['currency', 'currency'], ['note', 'note'], ['active', 'active']])
+    if (patch[k] !== undefined) { vals.push(patch[k]); sets.push(`${col}=$${vals.length}`) }
+  if (sets.length) await q(`update saas.bank_accounts set ${sets.join(',')} where id=$1`, vals)
+  return (await q('select * from saas.bank_accounts where id=$1', [id])).rows[0]
+}
+export async function deleteBankAccount(id) { await q('delete from saas.bank_accounts where id=$1', [id]); return { ok: true } }
+
+// Le client téléverse sa preuve de virement → stockée sur R2, visible par l'admin.
+export async function uploadProof(clinicId, paymentId, { filename, contentType, dataBase64 }) {
+  const pay = (await q('select * from saas.payments where id=$1 and clinic_id=$2', [paymentId, clinicId])).rows[0]
+  if (!pay) throw err(404, 'Paiement introuvable')
+  if (pay.status === 'confirmed') throw err(409, 'Ce paiement est déjà confirmé')
+  if (!dataBase64) throw err(400, 'Fichier manquant')
+  if (!r2Ready()) throw err(503, 'Stockage des preuves non configuré (R2)')
+  const buf = Buffer.from(String(dataBase64).replace(/^data:[^;]+;base64,/, ''), 'base64')
+  if (!buf.length) throw err(400, 'Fichier illisible')
+  if (buf.length > 8 * 1024 * 1024) throw err(413, 'Fichier trop lourd (8 Mo maximum)')
+  const ext = ((filename && filename.includes('.') ? filename.split('.').pop() : (contentType || '').split('/')[1]) || 'bin').toLowerCase().replace(/[^a-z0-9]/g, '').slice(0, 5)
+  const key = `proofs/${clinicId}/${(pay.ref || paymentId)}-${crypto.randomBytes(4).toString('hex')}.${ext}`
+  await putObject(key, buf, contentType || 'application/octet-stream')
+  await q('update saas.payments set proof_url=$2 where id=$1', [paymentId, key])
+  await event(clinicId, 'proof_uploaded', { payment_id: paymentId, ref: pay.ref })
+  safe(mail.teamAlert({ subject: 'Preuve de virement reçue', html: `Clinique ${clinicId} — paiement ${pay.ref || paymentId} — à valider` }))
+  return { ok: true }
+}
+// URL signée temporaire pour que l'admin consulte la preuve.
+export async function proofUrl(paymentId) {
+  const pay = (await q('select proof_url from saas.payments where id=$1', [paymentId])).rows[0]
+  if (!pay || !pay.proof_url) throw err(404, 'Aucune preuve pour ce paiement')
+  const url = await presignGet(pay.proof_url, 600)
+  if (!url) throw err(503, 'Stockage non configuré')
+  return { url }
+}
+
+// Vérifie automatiquement auprès de MonCash les paiements encore en attente.
+export async function autoVerifyMoncash() {
+  const pend = (await q(`select id from saas.payments where method='moncash' and status='pending' and created_at > now() - interval '2 hours'`)).rows
+  let confirmed = 0, failed = 0
+  for (const p of pend) { try { const r = await verifyMoncash(p.id); if (r.status === 'confirmed') confirmed++; else if (r.status === 'failed') failed++ } catch {} }
+  return { checked: pend.length, confirmed, failed }
 }
 
 // ─── Activer un hôte pour une clinique donnée (contrôle des sièges) ──────────

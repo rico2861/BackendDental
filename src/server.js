@@ -19,7 +19,10 @@ const PORT = Number(process.env.SAAS_PORT || process.env.PORT) || 4000
 const app = express()
 app.set('trust proxy', 1)
 app.use(helmet({ contentSecurityPolicy: false }))
-app.use(express.json({ limit: '256kb' }))
+// JSON 256 Ko partout, sauf l'upload de preuve (image) qui accepte jusqu'à 12 Mo.
+const bigJson = express.json({ limit: '12mb' })
+const smallJson = express.json({ limit: '256kb' })
+app.use((req, res, next) => req.path === '/api/account/pay/proof' ? bigJson(req, res, next) : smallJson(req, res, next))
 app.use(cookieParser())
 
 // ─── CORS (pour une vitrine / console hébergées séparément du backend) ───────
@@ -64,6 +67,8 @@ app.post('/api/account/plan', requireClient, wrap(async (req, res) => res.json(a
 app.post('/api/account/pay/moncash', requireClient, wrap(async (req, res) => res.json(await core.initiateMoncash({ clinic_id: req.client.cid, plan: req.body?.plan }))))
 app.get('/api/account/pay/verify', requireClient, wrap(async (req, res) => res.json(await core.verifyMoncash(req.query.payment_id))))
 app.post('/api/account/pay/virement', requireClient, wrap(async (req, res) => res.json(await core.requestVirement(req.client.cid, req.body?.plan))))
+app.post('/api/account/pay/proof', requireClient, wrap(async (req, res) => res.json(await core.uploadProof(req.client.cid, req.body?.payment_id, req.body || {}))))
+app.get('/api/bank-accounts', wrap(async (req, res) => res.json(await core.listBankAccounts(true))))
 // Paiement MonCash : la clinique initie → on renvoie l'URL de redirection MonCash
 app.post('/api/pay/moncash', limiter, wrap(async (req, res) => res.json(await core.initiateMoncash(req.body || {}))))
 // Page de retour : MonCash renvoie le client ici (orderId = id du paiement)
@@ -107,6 +112,13 @@ admin.post('/licenses/:lid/revoke', wrap(async (req, res) => res.json(await core
 admin.get('/payments', wrap(async (req, res) => res.json(await core.listPayments(req.query.status))))
 admin.get('/backups', wrap(async (req, res) => res.json(await core.listBackups())))
 admin.get('/events', wrap(async (req, res) => res.json(await core.listEvents(req.query.limit))))
+// Comptes bancaires (affichés aux clients pour le virement)
+admin.get('/bank-accounts', wrap(async (req, res) => res.json(await core.listBankAccounts())))
+admin.post('/bank-accounts', wrap(async (req, res) => res.json(await core.addBankAccount(req.body || {}))))
+admin.patch('/bank-accounts/:id', wrap(async (req, res) => res.json(await core.updateBankAccount(req.params.id, req.body || {}))))
+admin.delete('/bank-accounts/:id', wrap(async (req, res) => res.json(await core.deleteBankAccount(req.params.id))))
+// Preuve de virement (URL signée temporaire)
+admin.get('/payments/:id/proof-url', wrap(async (req, res) => res.json(await core.proofUrl(req.params.id))))
 app.use('/admin/api', admin)
 
 // ─── Frontend de la console (optionnel : absent si la console est hébergée à part)
@@ -126,6 +138,9 @@ export async function start() {
   // Entretien quotidien : rappels d'expiration, blocages, rétention 90 j
   const maint = () => core.runMaintenance().then(r => r.reminded + r.blocked && console.log('Entretien :', r)).catch(e => console.error('Entretien :', e.message))
   setTimeout(maint, 10000); setInterval(maint, 24 * 3600000).unref?.()
+  // MonCash : vérification automatique du statut des paiements en attente
+  const mcPoll = () => core.autoVerifyMoncash().then(r => (r.confirmed || r.failed) && console.log('MonCash auto :', r)).catch(() => {})
+  setInterval(mcPoll, 90000).unref?.()
   return app.listen(PORT, () => console.log('Console SaaS prête sur le port', PORT))
 }
 

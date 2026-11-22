@@ -165,7 +165,20 @@ create table if not exists admins (
   email         text not null unique,
   password_hash text not null,                    -- argon2/bcrypt
   role          text not null default 'owner',    -- owner | staff
+  blocked       boolean not null default false,   -- compte admin bloqué
   created_at    timestamptz not null default now()
+);
+
+-- ─── Comptes bancaires affichés aux clients pour le virement ────────────────
+create table if not exists bank_accounts (
+  id          bigserial primary key,
+  bank_name   text not null,                      -- ex. Unibank, Sogebank
+  holder      text not null,                      -- titulaire du compte
+  number      text not null,                      -- n° de compte
+  currency    text not null default 'HTG',
+  note        text,                               -- ex. « agence Pétion-Ville »
+  active      boolean not null default true,
+  created_at  timestamptz not null default now()
 );
 
 -- ─── Vue pratique : état courant de chaque clinique ─────────────────────────
