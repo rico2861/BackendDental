@@ -6,14 +6,15 @@
 //  Templates personnalisés par scénario, mise en page responsive.
 // ═══════════════════════════════════════════════════════════════════════════
 
-const B = { name: 'DENTAL', teal: '#0ea5a4', dark: '#0d1b2a', text: '#374151', muted: '#6b7280', border: '#e5e7eb', coral: '#ff5d4d' }
+const B = { name: 'Dental Assist', teal: '#0ea5a4', dark: '#0d1b2a', text: '#374151', muted: '#6b7280', border: '#e5e7eb', coral: '#ff5d4d' }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 const env = k => process.env[k]
 const FROM = () => ({
-  client: `"DENTAL" <${env('MAIL_FROM') || 'support@dental-light.app'}>`,
-  admin: `"DENTAL" <${env('MAIL_FROM_ADMIN') || env('MAIL_FROM') || 'team@dental-light.app'}>`
+  client: `"Dental Assist" <${env('MAIL_FROM') || 'dentalassist@gmail.com'}>`,
+  admin: `"Dental Assist" <${env('MAIL_FROM_ADMIN') || env('MAIL_FROM') || 'dentalassist@gmail.com'}>`
 })
-const SUPPORT = () => env('MAIL_SUPPORT') || 'support@dental-light.app'
+const SUPPORT = () => env('MAIL_SUPPORT') || 'dentalassist@gmail.com'
+const PHONE = () => env('CONTACT_PHONE') || '+509 3454 6896'
 const SITE = () => (env('VITRINE_URL') || '').replace(/\/+$/, '')
 const fdate = d => d ? new Date(d).toLocaleDateString('fr-FR', { timeZone: 'America/Port-au-Prince', dateStyle: 'long' }) : ''
 
@@ -40,12 +41,12 @@ const layout = (preheader, body) => `<!DOCTYPE html><html lang="fr"><head><meta 
 <span style="display:none;max-height:0;overflow:hidden">${esc(preheader)}</span>
 <table width="100%" cellpadding="0" cellspacing="0" style="background:#f1f5f9;padding:40px 16px"><tr><td align="center">
 <table width="100%" cellpadding="0" cellspacing="0" style="max-width:580px">
-  <tr><td style="padding-bottom:22px;text-align:center"><span style="font-size:24px;font-weight:800;color:${B.dark};letter-spacing:-.5px">DENTAL</span></td></tr>
+  <tr><td style="padding-bottom:22px;text-align:center"><span style="font-size:24px;font-weight:800;color:${B.dark};letter-spacing:-.5px">${B.name}</span></td></tr>
   <tr><td style="background:#fff;border-radius:16px;overflow:hidden;box-shadow:0 4px 32px rgba(0,0,0,.07);border:1px solid ${B.border}">
     <table width="100%" cellpadding="0" cellspacing="0"><tr><td style="padding:40px 44px 36px">${body}</td></tr></table>
   </td></tr>
   <tr><td style="padding:22px 0 8px;text-align:center">
-    <p style="margin:0 0 6px;color:#64748b;font-size:12.5px">© ${new Date().getFullYear()} DENTAL · Haïti · <a href="mailto:${SUPPORT()}" style="color:#64748b">${SUPPORT()}</a></p>
+    <p style="margin:0 0 6px;color:#64748b;font-size:12.5px">© ${new Date().getFullYear()} Dental Assist · Haïti · ${PHONE()} · <a href="mailto:${SUPPORT()}" style="color:#64748b">${SUPPORT()}</a></p>
     <p style="margin:0;color:#94a3b8;font-size:11.5px">E-mail automatique — merci de ne pas répondre directement.</p>
   </td></tr>
 </table></td></tr></table></body></html>`
@@ -64,7 +65,7 @@ const codeBox = (label, code) => `<div style="background:#f0fdfb;border:2px soli
 const kv = rows => `<table width="100%" cellpadding="0" cellspacing="0" style="border-radius:10px;overflow:hidden;border:1px solid ${B.border};margin:0 0 22px">${rows.map(([k, v]) => `<tr><td style="padding:10px 16px;background:#f9fafb;font-size:13px;color:${B.muted};border-bottom:1px solid ${B.border};width:42%">${k}</td><td style="padding:10px 16px;font-size:13.5px;color:${B.dark};font-weight:600;border-bottom:1px solid ${B.border}">${v}</td></tr>`).join('')}</table>`
 
 const steps = () => `<ol style="color:${B.text};font-size:14.5px;line-height:1.9;padding-left:20px;margin:0 0 22px">
-  <li>Téléchargez et installez le logiciel DENTAL.</li>
+  <li>Téléchargez et installez le logiciel Dental.</li>
   <li>À l'ouverture, entrez votre <strong>code d'activation</strong>.</li>
   <li>Changez le mot de passe du propriétaire, et commencez à travailler.</li></ol>`
 

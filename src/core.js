@@ -37,6 +37,7 @@ const err = (status, message, code) => Object.assign(new Error(message), { statu
 const genId = () => 'c' + crypto.randomBytes(3).toString('hex')          // ex. c7f3a9 (6 car.)
 const genCode = name => (String(name || 'DL').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'DL') + '-' +
   crypto.randomBytes(2).toString('hex').toUpperCase()                     // ex. SOLEIL-4F2A
+const refOf = (prefix, id) => `${prefix}-${String(id).padStart(6, '0')}`  // id plateforme unique (PAY-000123 / VIR-000123)
 
 // ─── Clés de licence FORTES ─────────────────────────────────────────────────
 // Alphabet de 32 symboles sans caractères ambigus (ni I, O, 0, 1). Format
@@ -176,9 +177,11 @@ export async function requestVirement(clinicId, plan) {
   const pr = prices()
   const p = (await q(`insert into saas.payments(clinic_id,method,plan,amount,currency,status)
                       values ($1,'virement',$2,$3,$4,'pending') returning *`, [clinicId, plan, pr[plan], pr.currency])).rows[0]
-  await event(clinicId, 'virement_requested', { payment_id: p.id, plan })
-  safe(mail.teamAlert({ subject: 'Virement en attente', html: `Clinique ${clinicId} — ${plan} — réf VIR-${p.id}` }))
-  return { payment_id: p.id, reference: 'VIR-' + p.id, amount: pr[plan], currency: pr.currency }
+  const ref = refOf('VIR', p.id)
+  await q('update saas.payments set ref=$2 where id=$1', [p.id, ref])
+  await event(clinicId, 'virement_requested', { payment_id: p.id, ref, plan })
+  safe(mail.teamAlert({ subject: 'Virement en attente', html: `Clinique ${clinicId} — ${plan} — réf ${ref}` }))
+  return { payment_id: p.id, reference: ref, ref, amount: pr[plan], currency: pr.currency }
 }
 
 // ─── Activer un hôte pour une clinique donnée (contrôle des sièges) ──────────
@@ -267,7 +270,10 @@ export async function createPayment({ clinic_id, method, plan, amount, currency 
   if (!PLAN_DURATIONS[plan] || plan === 'trial') throw err(400, 'Formule invalide (1m ou 1y)')
   const p = (await q(`insert into saas.payments(clinic_id,method,plan,amount,currency,reference,status)
                       values ($1,$2,$3,$4,$5,$6,$7) returning *`, [clinic_id, method, plan, amount, currency, reference || null, status])).rows[0]
-  await event(clinic_id, 'payment_created', { method, plan, amount, status })
+  const ref = refOf(method === 'moncash' ? 'PAY' : 'VIR', p.id)
+  await q('update saas.payments set ref=$2 where id=$1', [p.id, ref])
+  p.ref = ref
+  await event(clinic_id, 'payment_created', { method, plan, amount, status, ref })
   if (status === 'confirmed') await openSubscriptionFromPayment(p)
   return p
 }
@@ -428,10 +434,11 @@ export async function initiateMoncash({ clinic_id, plan }) {
   const pr = prices(), amount = pr[plan]
   const pay = (await q(`insert into saas.payments(clinic_id,method,plan,amount,currency,status)
                         values ($1,'moncash',$2,$3,$4,'pending') returning *`, [clinic_id, plan, amount, pr.currency])).rows[0]
+  await q('update saas.payments set ref=$2, moncash_order_id=$3 where id=$1', [pay.id, refOf('PAY', pay.id), String(pay.id)])
   const { redirectUrl, paymentToken } = await MC.createPayment(amount, pay.id)
   await q('update saas.payments set reference=$2 where id=$1', [pay.id, paymentToken])
-  await event(clinic_id, 'moncash_initiated', { payment_id: pay.id, amount, plan })
-  return { payment_id: pay.id, amount, currency: pr.currency, redirectUrl }
+  await event(clinic_id, 'moncash_initiated', { payment_id: pay.id, ref: refOf('PAY', pay.id), amount, plan })
+  return { payment_id: pay.id, ref: refOf('PAY', pay.id), amount, currency: pr.currency, redirectUrl }
 }
 
 // Vérifie un paiement MonCash (par orderId = id du paiement) et confirme si réussi.
@@ -440,13 +447,28 @@ export async function verifyMoncash(paymentId) {
   if (!pay) throw err(404, 'Paiement introuvable')
   if (pay.status === 'confirmed') return { status: 'confirmed', already: true }
   const p = await MC.verifyByOrderId(pay.id)
-  if (!p) return { status: 'pending', message: 'Paiement non encore effectué' }
+  if (!p) return { status: 'pending', message: 'Paiement non encore effectué', ref: pay.ref }
   const paid = /success/i.test(p.message || '') && Number(p.cost) >= Number(pay.amount)
-  if (!paid) return { status: 'pending', message: p.message || 'En attente', cost: p.cost }
-  await q('update saas.payments set reference=$2 where id=$1', [pay.id, p.transaction_id || pay.reference])
+  if (!paid) {
+    // MonCash signale un échec explicite → marquer le paiement en échec (visible en admin)
+    if (/fail|denied|cancel|error/i.test(p.message || '')) {
+      await q("update saas.payments set status='failed', details=$2 where id=$1 and status='pending'", [pay.id, JSON.stringify(p)])
+      await event(pay.clinic_id, 'moncash_failed', { payment_id: pay.id, ref: pay.ref, message: p.message })
+      return { status: 'failed', ref: pay.ref, message: p.message || 'Paiement échoué' }
+    }
+    return { status: 'pending', ref: pay.ref, message: p.message || 'En attente', cost: p.cost }
+  }
+  // Anti-doublon : le transaction_id MonCash ne doit jamais avoir servi à un autre paiement
+  const txid = p.transaction_id || null
+  if (txid) {
+    const dup = (await q('select id from saas.payments where moncash_transaction_id=$1 and id<>$2', [txid, pay.id])).rows[0]
+    if (dup) throw err(409, 'Cette transaction MonCash a déjà été utilisée pour un autre paiement.', 'DUP_TX')
+  }
+  await q(`update saas.payments set moncash_transaction_id=$2, payer=$3, paid_at=now(), details=$4,
+           reference=coalesce($2, reference) where id=$1`, [pay.id, txid, p.payer || null, JSON.stringify(p)])
   const r = await confirmPayment(pay.id, 'moncash')
-  await event(pay.clinic_id, 'moncash_confirmed', { payment_id: pay.id, transaction_id: p.transaction_id, payer: p.payer })
-  return { status: 'confirmed', subscription: r.subscription }
+  await event(pay.clinic_id, 'moncash_confirmed', { payment_id: pay.id, ref: pay.ref, transaction_id: txid, payer: p.payer, amount: p.cost })
+  return { status: 'confirmed', ref: pay.ref, transaction_id: txid, subscription: r.subscription }
 }
 
 // ─── Entretien quotidien : rappels d'expiration + blocage + rétention 90 j ───

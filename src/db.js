@@ -42,4 +42,9 @@ export async function ensureSchema() {
   await i.exec("alter table saas.clinics add column if not exists data_retention_until timestamptz")
   await i.exec("alter table saas.clinics add column if not exists password_hash text")
   await i.exec("alter table saas.clinics add column if not exists address text")
+  // Paiements : id plateforme unique + traçabilité MonCash + anti-doublon
+  for (const c of ['ref text', 'moncash_order_id text', 'moncash_transaction_id text', 'payer text', 'paid_at timestamptz', 'details jsonb', 'proof_url text'])
+    await i.exec(`alter table saas.payments add column if not exists ${c}`)
+  await i.exec("create unique index if not exists uq_pay_ref on saas.payments(ref)")
+  await i.exec("create unique index if not exists uq_pay_moncash_tx on saas.payments(moncash_transaction_id) where moncash_transaction_id is not null")
 }

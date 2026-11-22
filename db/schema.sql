@@ -101,12 +101,22 @@ create table if not exists payments (
   plan          text not null,                    -- 1m | 1y
   amount        numeric(12,2) not null,
   currency      text not null default 'HTG',
-  reference     text,                             -- n° de transaction MonCash / référence du virement
-  status        text not null default 'pending',  -- pending | confirmed | rejected
+  reference     text,                             -- (compat) n° transaction / référence
+  ref           text,                             -- id PLATEFORME unique : PAY-000123 / VIR-000123
+  moncash_order_id       text,                    -- order id envoyé à MonCash
+  moncash_transaction_id text,                    -- transaction id MonCash (UNIQUE, anti-réutilisation)
+  payer         text,                             -- n° du payeur MonCash
+  paid_at       timestamptz,                      -- date/heure réelle du paiement
+  details       jsonb,                            -- infos brutes de la transaction
+  status        text not null default 'pending',  -- pending | confirmed | rejected | failed
   confirmed_by  text,                             -- admin ayant confirmé (virement)
   confirmed_at  timestamptz,
+  proof_url     text,                             -- preuve de virement (Cloudflare R2)
   created_at    timestamptz not null default now()
 );
+-- Unicité : un id plateforme unique, et un id de transaction MonCash jamais réutilisé.
+create unique index if not exists uq_pay_ref on payments(ref);
+create unique index if not exists uq_pay_moncash_tx on payments(moncash_transaction_id) where moncash_transaction_id is not null;
 create index if not exists idx_pay_clinic on payments(clinic_id);
 create index if not exists idx_pay_status on payments(status);
 
