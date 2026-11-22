@@ -114,9 +114,8 @@ create table if not exists payments (
   proof_url     text,                             -- preuve de virement (Cloudflare R2)
   created_at    timestamptz not null default now()
 );
--- Unicité : un id plateforme unique, et un id de transaction MonCash jamais réutilisé.
-create unique index if not exists uq_pay_ref on payments(ref);
-create unique index if not exists uq_pay_moncash_tx on payments(moncash_transaction_id) where moncash_transaction_id is not null;
+-- (Les index d'unicité sur ref / moncash_transaction_id sont créés dans ensureSchema,
+--  APRÈS l'ajout des colonnes, pour fonctionner aussi sur une base déjà existante.)
 create index if not exists idx_pay_clinic on payments(clinic_id);
 create index if not exists idx_pay_status on payments(status);
 
