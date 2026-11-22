@@ -33,3 +33,18 @@ export function requireAdmin(req, res, next) {
   try { req.admin = jwt.verify(req.cookies?.[COOKIE] || '', SECRET()); next() }
   catch { res.status(401).json({ error: 'Non connecté', code: 'AUTH' }) }
 }
+
+// ─── Espace CLIENT (vitrine) : jeton porteur (Bearer), stocké côté vitrine. ──
+// On évite les cookies cross-site : la vitrine envoie Authorization: Bearer <token>.
+export function clientToken(clinic) {
+  return jwt.sign({ cid: clinic.id, email: clinic.email, role: 'client', jti: crypto.randomUUID() }, SECRET(), { expiresIn: '30d' })
+}
+export function requireClient(req, res, next) {
+  try {
+    const h = req.headers.authorization || ''
+    const t = h.startsWith('Bearer ') ? h.slice(7) : ''
+    const p = jwt.verify(t, SECRET())
+    if (p.role !== 'client') throw new Error('bad role')
+    req.client = p; next()
+  } catch { res.status(401).json({ error: 'Session expirée, reconnectez-vous.', code: 'AUTH' }) }
+}

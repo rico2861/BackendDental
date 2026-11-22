@@ -11,7 +11,7 @@ import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
 import { ensureSchema, dbKind } from './db.js'
-import { ensureAdmin, login, setCookie, clearCookie, requireAdmin } from './auth.js'
+import { ensureAdmin, login, setCookie, clearCookie, requireAdmin, requireClient } from './auth.js'
 import * as core from './core.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -54,6 +54,16 @@ app.post('/api/signup', limiter, wrap(async (req, res) => {
 }))
 app.get('/api/health', (req, res) => res.json({ status: 'ok' }))
 app.get('/api/prices', (req, res) => res.json(core.prices()))
+
+// ─── ESPACE CLIENT (vitrine) : compte → plan → paiement → licence ────────────
+const authLimit = rateLimit({ windowMs: 60000, max: 20 })
+app.post('/api/account/register', authLimit, wrap(async (req, res) => res.json(await core.registerAccount(req.body || {}))))
+app.post('/api/account/login', authLimit, wrap(async (req, res) => res.json(await core.loginAccount(req.body?.email, req.body?.password))))
+app.get('/api/account/me', requireClient, wrap(async (req, res) => res.json(await core.accountMe(req.client.cid))))
+app.post('/api/account/plan', requireClient, wrap(async (req, res) => res.json(await core.choosePlan(req.client.cid, req.body?.plan))))
+app.post('/api/account/pay/moncash', requireClient, wrap(async (req, res) => res.json(await core.initiateMoncash({ clinic_id: req.client.cid, plan: req.body?.plan }))))
+app.get('/api/account/pay/verify', requireClient, wrap(async (req, res) => res.json(await core.verifyMoncash(req.query.payment_id))))
+app.post('/api/account/pay/virement', requireClient, wrap(async (req, res) => res.json(await core.requestVirement(req.client.cid, req.body?.plan))))
 // Paiement MonCash : la clinique initie → on renvoie l'URL de redirection MonCash
 app.post('/api/pay/moncash', limiter, wrap(async (req, res) => res.json(await core.initiateMoncash(req.body || {}))))
 // Page de retour : MonCash renvoie le client ici (orderId = id du paiement)

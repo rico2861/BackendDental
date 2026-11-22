@@ -26,6 +26,8 @@ create table if not exists clinics (
   logo_url      text,
   -- Code d'activation remis à la clinique (saisi dans l'app pour activer un poste)
   activation_code text unique,
+  -- Mot de passe du compte client (bcrypt). NULL = compte créé par la console (sans portail).
+  password_hash text,
   -- Isolation des données de sauvegarde : schéma dédié dans le Supabase de sauvegarde
   backup_schema text generated always as ('clinic_' || id) stored,
   -- Conservation des données après blocage (90 jours) : rien n'est supprimé avant cette date
@@ -106,6 +108,23 @@ create table if not exists payments (
 );
 create index if not exists idx_pay_clinic on payments(clinic_id);
 create index if not exists idx_pay_status on payments(status);
+
+-- ─── Clés de licence remises au client (après paiement / essai) ─────────────
+-- LA clé FORTE que le client saisit dans le logiciel. Lettres+chiffres aléatoires
+-- (alphabet sans caractères ambigus), unique, ~100 bits d'entropie. Générée
+-- UNIQUEMENT après paiement confirmé (ou à l'ouverture de l'essai gratuit),
+-- jamais avant. Horodatée début → fin.
+create table if not exists license_keys (
+  key          text primary key,                   -- ex. DNTL-XXXXX-XXXXX-XXXXX-XXXXX
+  clinic_id    text not null references clinics(id) on delete cascade,
+  plan         text not null,                       -- trial | 1m | 1y
+  starts_at    timestamptz not null default now(),
+  ends_at      timestamptz not null,
+  status       text not null default 'active',      -- active | expired | revoked
+  payment_id   bigint references payments(id) on delete set null,
+  created_at   timestamptz not null default now()
+);
+create index if not exists idx_lk_clinic on license_keys(clinic_id, created_at desc);
 
 -- ─── Registre des sauvegardes (pour « voir si la sauvegarde a réussi ») ──────
 create table if not exists backups (

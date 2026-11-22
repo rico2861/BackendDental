@@ -5,8 +5,10 @@
 // ═══════════════════════════════════════════════════════════════════════════
 
 import crypto from 'crypto'
+import bcrypt from 'bcryptjs'
 import { q } from './db.js'
 import { sign } from './license-sign.js'
+import { clientToken } from './auth.js'
 import { PLAN_DURATIONS } from '../shared/license.js'
 import { moncash } from './moncash.js'
 import { mail } from './mail.js'
@@ -35,6 +37,22 @@ const err = (status, message, code) => Object.assign(new Error(message), { statu
 const genId = () => 'c' + crypto.randomBytes(3).toString('hex')          // ex. c7f3a9 (6 car.)
 const genCode = name => (String(name || 'DL').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'DL') + '-' +
   crypto.randomBytes(2).toString('hex').toUpperCase()                     // ex. SOLEIL-4F2A
+
+// ─── Clés de licence FORTES ─────────────────────────────────────────────────
+// Alphabet de 32 symboles sans caractères ambigus (ni I, O, 0, 1). Format
+// DNTL-XXXXX-XXXXX-XXXXX-XXXXX = 20 symboles = ~100 bits d'entropie. Unique en base.
+const KEY_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789'
+const keyGroup = (n = 5) => { const b = crypto.randomBytes(n); let s = ''; for (let i = 0; i < n; i++) s += KEY_ALPHABET[b[i] & 31]; return s }
+const makeLicenseKey = () => 'DNTL-' + [keyGroup(), keyGroup(), keyGroup(), keyGroup()].join('-')
+// Émet une clé (après paiement ou essai), l'inscrit en base avec début → fin.
+async function issueLicenseKey(clinicId, plan, startsAt, endsAt, paymentId = null) {
+  let key
+  for (let i = 0; i < 8; i++) { key = makeLicenseKey(); if (!(await q('select 1 from saas.license_keys where key=$1', [key])).rows.length) break }
+  await q(`insert into saas.license_keys(key,clinic_id,plan,starts_at,ends_at,status,payment_id)
+           values ($1,$2,$3,$4,$5,'active',$6)`, [key, clinicId, plan, startsAt, endsAt, paymentId])
+  await event(clinicId, 'license_issued', { plan, key, ends_at: endsAt })
+  return key
+}
 
 // ─── Statut effectif d'un abonnement ────────────────────────────────────────
 export function effectiveStatus(sub, at = now()) {
@@ -74,6 +92,81 @@ export async function createClinic({ name, email, phone, city, seats = 2 }) {
 }
 const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;' }[c]))
 
+// ═══════════════════════════════════════════════════════════════════════════
+//  ESPACE CLIENT (vitrine) : compte (mot de passe) → plan → paiement → licence
+// ═══════════════════════════════════════════════════════════════════════════
+function publicClinic(c) {
+  return { id: c.id, name: c.name, email: c.email, phone: c.phone, city: c.city, status: c.status, display_name: c.display_name }
+}
+
+// Créer un compte (aucune licence émise ici : elle vient du plan/paiement).
+export async function registerAccount({ name, email, password, phone, city }) {
+  if (!name || !email || !password) throw err(400, 'Nom, e-mail et mot de passe requis')
+  if (String(password).length < 6) throw err(400, 'Mot de passe trop court (6 caractères minimum)')
+  const e = String(email).trim().toLowerCase()
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw err(400, 'E-mail invalide')
+  if ((await q('select 1 from saas.clinics where lower(email)=$1', [e])).rows.length) throw err(409, 'Un compte existe déjà avec cet e-mail')
+  let id
+  for (let i = 0; i < 8; i++) { id = genId(); if (!(await q('select 1 from saas.clinics where id=$1', [id])).rows.length) break }
+  const hash = bcrypt.hashSync(String(password), 10)
+  await q(`insert into saas.clinics(id,name,email,phone,city,status,display_name,password_hash)
+           values ($1,$2,$3,$4,$5,'registered',$2,$6)`, [id, name, e, phone || null, city || null, hash])
+  await event(id, 'account_created', {})
+  safe(mail.teamAlert({ subject: 'Nouveau compte', html: `${esc(name)} — ${esc(e)}` }))
+  const clinic = (await q('select * from saas.clinics where id=$1', [id])).rows[0]
+  return { token: clientToken(clinic), clinic: publicClinic(clinic) }
+}
+
+export async function loginAccount(email, password) {
+  const e = String(email || '').trim().toLowerCase()
+  const c = (await q('select * from saas.clinics where lower(email)=$1', [e])).rows[0]
+  if (!c || !c.password_hash || !bcrypt.compareSync(String(password || ''), c.password_hash)) throw err(401, 'E-mail ou mot de passe incorrect')
+  return { token: clientToken(c), clinic: publicClinic(c) }
+}
+
+// Espace client : infos + ses licences + ses paiements.
+export async function accountMe(clinicId) {
+  const c = (await q('select * from saas.clinics where id=$1', [clinicId])).rows[0]
+  if (!c) throw err(404, 'Compte introuvable')
+  const sub = await latestSub(clinicId)
+  const licenses = (await q('select key,plan,starts_at,ends_at,status,created_at from saas.license_keys where clinic_id=$1 order by created_at desc', [clinicId])).rows
+  const payments = (await q('select id,method,plan,amount,currency,status,created_at from saas.payments where clinic_id=$1 order by created_at desc limit 20', [clinicId])).rows
+  const hasTrial = (await q("select 1 from saas.subscriptions where clinic_id=$1 and plan='trial'", [clinicId])).rows.length > 0
+  return { clinic: publicClinic(c), subscription: sub ? { plan: sub.plan, period_end: sub.period_end, status: effectiveStatus(sub) } : null, prices: prices(), trial_used: hasTrial, licenses, payments }
+}
+
+// Choix du plan. Essai = licence immédiate (gratuit). Payant = paiement d'abord.
+export async function choosePlan(clinicId, plan) {
+  if (plan === 'trial') return claimTrial(clinicId)
+  if (plan !== '1m' && plan !== '1y') throw err(400, 'Formule invalide (trial, 1m ou 1y)')
+  const pr = prices()
+  return { needs_payment: true, plan, amount: pr[plan], currency: pr.currency }
+}
+
+// Ouvrir l'essai gratuit 15 j (une seule fois) → licence immédiate, sans paiement.
+export async function claimTrial(clinicId) {
+  const c = (await q('select * from saas.clinics where id=$1', [clinicId])).rows[0]
+  if (!c) throw err(404, 'Compte introuvable')
+  if ((await q("select 1 from saas.subscriptions where clinic_id=$1 and plan='trial'", [clinicId])).rows.length) throw err(409, 'Essai déjà utilisé pour ce compte')
+  const start = now(), end = addDays(start, PLAN_DURATIONS.trial)
+  await q(`insert into saas.subscriptions(clinic_id,plan,seats,period_start,period_end,status) values ($1,'trial',2,$2,$3,'active')`, [clinicId, start, end])
+  await q("update saas.clinics set status='trial', updated_at=now() where id=$1", [clinicId])
+  const key = await issueLicenseKey(clinicId, 'trial', start, end, null)
+  safe(mail.licenseKey({ to: c.email, clinic: c.name, key, plan: 'trial', startsAt: start, endsAt: end }))
+  return { plan: 'trial', license_key: key, starts_at: start, ends_at: end }
+}
+
+// Demande de paiement par virement bancaire (confirmé ensuite depuis la console).
+export async function requestVirement(clinicId, plan) {
+  if (plan !== '1m' && plan !== '1y') throw err(400, 'Formule invalide (1m ou 1y)')
+  const pr = prices()
+  const p = (await q(`insert into saas.payments(clinic_id,method,plan,amount,currency,status)
+                      values ($1,'virement',$2,$3,$4,'pending') returning *`, [clinicId, plan, pr[plan], pr.currency])).rows[0]
+  await event(clinicId, 'virement_requested', { payment_id: p.id, plan })
+  safe(mail.teamAlert({ subject: 'Virement en attente', html: `Clinique ${clinicId} — ${plan} — réf VIR-${p.id}` }))
+  return { payment_id: p.id, reference: 'VIR-' + p.id, amount: pr[plan], currency: pr.currency }
+}
+
 // ─── Activer un hôte pour une clinique donnée (contrôle des sièges) ──────────
 async function activateForClinic(clinic, { fingerprint, hostname, app_version }) {
   if (!fingerprint) throw err(400, 'Empreinte machine manquante')
@@ -98,11 +191,25 @@ async function activateForClinic(clinic, { fingerprint, hostname, app_version })
   return { token, brand: brandOf(clinic), host_id: host.id, expires_at: sub.period_end }
 }
 
-// Appelé par l'app Dental (POST /api/activate) : via le code de la clinique.
-export async function activate({ code, fingerprint, hostname, app_version }) {
-  if (!code) throw err(400, 'Code d\'activation manquant')
-  const clinic = (await q('select * from saas.clinics where upper(activation_code)=upper($1)', [String(code).trim()])).rows[0]
-  if (!clinic) throw err(404, 'Code d\'activation inconnu', 'BAD_CODE')
+// Appelé par l'app Dental (POST /api/activate) : via la CLÉ DE LICENCE.
+export async function activate({ key, code, fingerprint, hostname, app_version }) {
+  const raw = String(key || code || '').trim()
+  if (!raw) throw err(400, 'Clé de licence manquante')
+  const norm = raw.toUpperCase()
+  // 1) Nouvelle clé de licence forte (license_keys)
+  const lk = (await q('select * from saas.license_keys where upper(key)=$1', [norm])).rows[0]
+  if (lk) {
+    if (lk.status === 'revoked') throw err(403, 'Licence révoquée. Contactez votre fournisseur.', 'REVOKED')
+    if (new Date(lk.ends_at) < now()) throw err(402, 'Licence expirée : renouvelez pour réactiver ce poste.', 'EXPIRED')
+    const clinic = (await q('select * from saas.clinics where id=$1', [lk.clinic_id])).rows[0]
+    if (!clinic) throw err(404, 'Clinique inconnue')
+    if (clinic.status === 'suspended') throw err(403, 'Compte suspendu. Contactez votre fournisseur.', 'SUSPENDED')
+    const r = await activateForClinic(clinic, { fingerprint, hostname, app_version })
+    return { token: r.token, brand: r.brand }
+  }
+  // 2) Repli : ancien code d'activation de clinique (compat)
+  const clinic = (await q('select * from saas.clinics where upper(activation_code)=$1', [norm])).rows[0]
+  if (!clinic) throw err(404, 'Clé de licence inconnue', 'BAD_CODE')
   if (clinic.status === 'suspended') throw err(403, 'Compte suspendu. Contactez votre fournisseur.', 'SUSPENDED')
   const r = await activateForClinic(clinic, { fingerprint, hostname, app_version })
   return { token: r.token, brand: r.brand }
@@ -177,8 +284,14 @@ async function openSubscriptionFromPayment(p) {
   const sub = (await q(`insert into saas.subscriptions(clinic_id,plan,seats,period_start,period_end,status,payment_id)
                         values ($1,$2,$3,$4,$5,'active',$6) returning *`, [p.clinic_id, p.plan, seats, start, end, p.id])).rows[0]
   await q("update saas.clinics set status='active', data_retention_until=null, updated_at=now() where id=$1", [p.clinic_id])
+  // La CLÉ de licence n'est générée QU'ICI, une fois le paiement confirmé — jamais avant.
+  const key = await issueLicenseKey(p.clinic_id, p.plan, start, end, p.id)
   const c = (await q('select name, email from saas.clinics where id=$1', [p.clinic_id])).rows[0]
-  if (c) safe(mail.paymentConfirmed({ to: c.email, clinic: c.name, plan: p.plan, amount: p.amount, currency: p.currency, periodEnd: end, method: p.method }))
+  if (c) {
+    safe(mail.paymentConfirmed({ to: c.email, clinic: c.name, plan: p.plan, amount: p.amount, currency: p.currency, periodEnd: end, method: p.method }))
+    safe(mail.licenseKey({ to: c.email, clinic: c.name, key, plan: p.plan, startsAt: start, endsAt: end }))
+  }
+  sub.license_key = key
   return sub
 }
 
@@ -345,11 +458,12 @@ export async function resendCode(email) {
   const e = String(email || '').trim().toLowerCase()
   if (!/^[^@\s]+@[^@\s]+$/.test(e)) throw err(400, 'E-mail invalide')
   const c = (await q('select id, name, email, activation_code, status from saas.clinics where lower(email)=$1', [e])).rows[0]
-  if (c && c.activation_code && c.status !== 'suspended') {
-    safe(mail.codeReminder({ to: c.email, clinic: c.name, code: c.activation_code }))
-    await event(c.id, 'code_resent', {})
+  if (c && c.status !== 'suspended') {
+    const lk = (await q("select key,plan,starts_at,ends_at from saas.license_keys where clinic_id=$1 and status='active' order by created_at desc limit 1", [c.id])).rows[0]
+    if (lk) { safe(mail.licenseKey({ to: c.email, clinic: c.name, key: lk.key, plan: lk.plan, startsAt: lk.starts_at, endsAt: lk.ends_at })); await event(c.id, 'code_resent', {}) }
+    else if (c.activation_code) { safe(mail.codeReminder({ to: c.email, clinic: c.name, code: c.activation_code })); await event(c.id, 'code_resent', {}) }
   }
-  return { ok: true, message: 'Si un compte existe avec cet e-mail, le code vient d’être envoyé.' }
+  return { ok: true, message: 'Si un compte existe avec cet e-mail, la clé vient d’être envoyée.' }
 }
 
 export async function listEvents(limit = 100) {

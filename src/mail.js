@@ -135,9 +135,24 @@ export function codeReminder({ to, clinic, code }) {
   return send(to, 'Votre code d’activation DENTAL', layout('Votre code d’activation DENTAL', body), 'client')
 }
 
+// 6) Clé de licence remise au client (après paiement OU essai gratuit)
+export function licenseKey({ to, clinic, key, plan, startsAt, endsAt }) {
+  const planL = plan === '1y' ? 'Abonnement 1 an' : plan === '1m' ? 'Abonnement 1 mois' : 'Essai gratuit 15 jours'
+  const dl = env('DOWNLOAD_URL') || SITE() || '#'
+  const body = `${hero('🔑', '#f0fdfb', 'Votre clé de licence', esc(clinic))}
+    ${greet(clinic)}
+    ${para('Voici votre clé de licence DENTAL. Saisissez-la dans le logiciel pour activer vos postes. Elle est unique à votre clinique — gardez-la confidentielle.')}
+    ${codeBox('Clé de licence', key)}
+    ${kv([['Formule', planL], ['Valable du', fdate(startsAt)], ['Jusqu’au', fdate(endsAt)]])}
+    ${steps()}
+    ${btn('Télécharger le logiciel', dl)}
+    <p style="margin:18px 0 0;color:${B.muted};font-size:12.5px;text-align:center">Besoin d’aide ? <a href="mailto:${SUPPORT()}">${SUPPORT()}</a></p>`
+  return send(to, `Votre clé de licence DENTAL — ${planL}`, layout(`Votre clé DENTAL : ${key}`, body), 'client')
+}
+
 // Envoi « brut » (relais depuis l'app clinique : codes de connexion, etc.) — garde le HTML de l'app.
 export async function sendRaw({ to, subject, html, text }) {
   return send(to, subject, html || esc(text || '').replace(/\n/g, '<br>'), 'client')
 }
 
-export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert, sendRaw, codeReminder }
+export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert, sendRaw, codeReminder, licenseKey }

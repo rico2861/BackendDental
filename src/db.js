@@ -40,4 +40,5 @@ export async function ensureSchema() {
   // garde-fous si une base existait avant l'ajout de colonnes
   await i.exec("alter table saas.clinics add column if not exists activation_code text")
   await i.exec("alter table saas.clinics add column if not exists data_retention_until timestamptz")
+  await i.exec("alter table saas.clinics add column if not exists password_hash text")
 }
