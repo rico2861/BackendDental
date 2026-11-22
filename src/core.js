@@ -47,6 +47,10 @@ const genPassword = () => {
   for (let i = 0; i < 7; i++) p += pick(A + a + d)
   return p + '!'
 }
+// OTP de connexion (6 chiffres), haché en base, e-mail masqué pour l'UI
+const genOtp = () => String(crypto.randomInt(0, 1000000)).padStart(6, '0')
+const hashCode = c => crypto.createHash('sha256').update(String(c)).digest('hex')
+const maskEmail = e => { const [u, d] = String(e || '').split('@'); return d ? (u.slice(0, 2) + '•••@' + d) : e }
 
 // ─── Clés de licence FORTES ─────────────────────────────────────────────────
 // Alphabet de 32 symboles sans caractères ambigus (ni I, O, 0, 1). Format
@@ -380,6 +384,51 @@ export async function activate({ key, code, fingerprint, hostname, app_version }
   if (clinic.status === 'suspended') throw err(403, 'Compte suspendu. Contactez votre fournisseur.', 'SUSPENDED')
   const r = await activateForClinic(clinic, { fingerprint, hostname, app_version })
   return { token: r.token, brand: r.brand }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  CONNEXION PAR OTP : licence → code e-mail (10 min) → accès. App + web.
+// ═══════════════════════════════════════════════════════════════════════════
+// Étape 1 : vérifier la licence puis envoyer un code à l'e-mail d'inscription.
+export async function requestLoginOtp({ key, code, fingerprint, hostname }) {
+  const raw = String(key || code || '').trim().toUpperCase()
+  if (!raw) throw err(400, 'Clé de licence manquante')
+  const lk = (await q('select * from saas.license_keys where upper(key)=$1', [raw])).rows[0]
+  if (!lk) throw err(404, 'Clé de licence inconnue', 'BAD_KEY')
+  if (lk.status === 'revoked') throw err(403, 'Licence révoquée. Contactez votre fournisseur.', 'REVOKED')
+  if (new Date(lk.ends_at) < now()) throw err(402, 'Licence expirée : renouvelez pour vous connecter.', 'EXPIRED')
+  const c = (await q('select * from saas.clinics where id=$1', [lk.clinic_id])).rows[0]
+  if (!c) throw err(404, 'Clinique inconnue')
+  if (c.status === 'suspended') throw err(403, 'Compte suspendu. Contactez votre fournisseur.', 'SUSPENDED')
+  const recent = (await q("select count(*)::int n from saas.otps where clinic_id=$1 and created_at > now() - interval '10 minutes'", [c.id])).rows[0].n
+  if (recent >= 5) throw err(429, 'Trop de demandes de code. Patientez quelques minutes.', 'RATE')
+  const otp = genOtp()
+  const expires = new Date(now().getTime() + 10 * 60000)
+  await q('insert into saas.otps(clinic_id,key,fingerprint,code_hash,expires_at) values ($1,$2,$3,$4,$5)', [c.id, raw, fingerprint || null, hashCode(otp), expires])
+  safe(mail.otpCode({ to: c.email, clinic: c.name, code: otp, minutes: 10 }))
+  await event(c.id, 'otp_requested', { fingerprint })
+  return { otp_sent: true, email: maskEmail(c.email), expires_in: 600 }
+}
+
+// Étape 2 : vérifier le code (10 min, 5 tentatives) puis activer le poste.
+export async function verifyLoginOtp({ key, code, otp, fingerprint, hostname, app_version }) {
+  const raw = String(key || '').trim().toUpperCase()
+  const value = String(otp ?? code ?? '').trim()
+  if (!raw) throw err(400, 'Clé de licence manquante')
+  const lk = (await q('select * from saas.license_keys where upper(key)=$1', [raw])).rows[0]
+  if (!lk) throw err(404, 'Clé de licence inconnue', 'BAD_KEY')
+  const o = (await q('select * from saas.otps where clinic_id=$1 and key=$2 and consumed=false order by created_at desc limit 1', [lk.clinic_id, raw])).rows[0]
+  if (!o) throw err(400, 'Aucun code en attente. Demandez un nouveau code.', 'NO_OTP')
+  if (new Date(o.expires_at) < now()) throw err(401, 'Code expiré. Demandez un nouveau code.', 'OTP_EXPIRED')
+  if (o.attempts >= 5) throw err(429, 'Trop de tentatives. Demandez un nouveau code.', 'OTP_LOCKED')
+  if (o.code_hash !== hashCode(value)) {
+    await q('update saas.otps set attempts=attempts+1 where id=$1', [o.id])
+    throw err(401, 'Code incorrect.', 'OTP_BAD')
+  }
+  await q('update saas.otps set consumed=true where id=$1', [o.id])
+  await event(lk.clinic_id, 'otp_verified', { fingerprint })
+  // Code validé → activation du poste (siège + jeton signé + profil)
+  return await activate({ key: raw, fingerprint, hostname, app_version })
 }
 
 // Généré depuis la console (clé manuelle pour un poste dont on a l'empreinte).

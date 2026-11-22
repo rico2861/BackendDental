@@ -46,6 +46,9 @@ const limiter = rateLimit({ windowMs: 60000, max: 120 })
 
 // ─── Endpoints appelés par l'APP DENTALE (pas d'auth admin) ──────────────────
 app.post('/api/activate', limiter, wrap(async (req, res) => res.json(await core.activate(req.body || {}))))
+// Connexion par OTP : licence → code e-mail (10 min) → activation
+app.post('/api/activate/request-otp', limiter, wrap(async (req, res) => res.json(await core.requestLoginOtp(req.body || {}))))
+app.post('/api/activate/verify-otp', limiter, wrap(async (req, res) => res.json(await core.verifyLoginOtp(req.body || {}))))
 app.post('/api/check', limiter, wrap(async (req, res) => res.json(await core.check(req.body || {}))))
 app.post('/api/backups/report', limiter, wrap(async (req, res) => res.json(await core.recordBackup(req.body || {}))))
 app.post('/api/relay-mail', rateLimit({ windowMs: 60000, max: 30 }), wrap(async (req, res) => res.json(await core.relayMail(req.body || {}))))

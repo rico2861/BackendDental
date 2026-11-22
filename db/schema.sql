@@ -181,6 +181,20 @@ create table if not exists bank_accounts (
   created_at  timestamptz not null default now()
 );
 
+-- ─── Codes OTP de connexion (licence → code email, 10 min) ──────────────────
+create table if not exists otps (
+  id          bigserial primary key,
+  clinic_id   text not null references clinics(id) on delete cascade,
+  key         text not null,                      -- clé de licence utilisée
+  fingerprint text,                               -- machine (facultatif)
+  code_hash   text not null,                      -- hash SHA-256 du code à 6 chiffres
+  expires_at  timestamptz not null,
+  consumed    boolean not null default false,
+  attempts    int not null default 0,
+  created_at  timestamptz not null default now()
+);
+create index if not exists idx_otp_clinic on otps(clinic_id, created_at desc);
+
 -- ─── Vue pratique : état courant de chaque clinique ─────────────────────────
 create or replace view clinic_overview as
 select

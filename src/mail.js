@@ -151,9 +151,19 @@ export function licenseKey({ to, clinic, key, plan, startsAt, endsAt }) {
   return send(to, `Votre clé de licence DENTAL — ${planL}`, layout(`Votre clé DENTAL : ${key}`, body), 'client')
 }
 
+// 7) Code OTP de connexion (licence → code email, avant tout accès)
+export function otpCode({ to, clinic, code, minutes = 10 }) {
+  const body = `${hero('🔐', '#eef2ff', 'Votre code de connexion', esc(clinic))}
+    ${greet(clinic)}
+    ${para(`Voici votre code pour vous connecter à <strong>Dental</strong>. Saisissez-le dans l'application. Il expire dans <strong>${minutes} minutes</strong>.`)}
+    ${codeBox('Code de connexion', code)}
+    ${alertBox("Si vous n'êtes pas à l'origine de cette connexion, ignorez cet e-mail — personne ne peut entrer sans ce code.", 'info')}`
+  return send(to, `Votre code de connexion Dental : ${code}`, layout(`Code de connexion : ${code}`, body), 'client')
+}
+
 // Envoi « brut » (relais depuis l'app clinique : codes de connexion, etc.) — garde le HTML de l'app.
 export async function sendRaw({ to, subject, html, text }) {
   return send(to, subject, html || esc(text || '').replace(/\n/g, '<br>'), 'client')
 }
 
-export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert, sendRaw, codeReminder, licenseKey }
+export const mail = { welcomeTrial, paymentConfirmed, expiringSoon, blocked, teamAlert, sendRaw, codeReminder, licenseKey, otpCode }
