@@ -83,7 +83,7 @@ app.get('/pay/retour', wrap(async (req, res) => {
 
 // ─── Authentification de la console ──────────────────────────────────────────
 app.post('/admin/api/login', rateLimit({ windowMs: 60000, max: 10 }), wrap(async (req, res) => {
-  const token = await login(req.body?.email, req.body?.password); setCookie(res, token); res.json({ ok: true })
+  const token = await login(req.body?.email, req.body?.password); setCookie(res, token); res.json({ ok: true, token })
 }))
 app.post('/admin/api/logout', (req, res) => { clearCookie(res); res.json({ ok: true }) })
 app.get('/admin/api/me', requireAdmin, (req, res) => res.json({ email: req.admin.email, role: req.admin.role }))

@@ -30,8 +30,11 @@ export function setCookie(res, token) {
 export function clearCookie(res) { res.clearCookie(COOKIE) }
 
 export function requireAdmin(req, res, next) {
-  try { req.admin = jwt.verify(req.cookies?.[COOKIE] || '', SECRET()); next() }
-  catch { res.status(401).json({ error: 'Non connecté', code: 'AUTH' }) }
+  try {
+    const h = req.headers.authorization || ''
+    const bearer = h.startsWith('Bearer ') ? h.slice(7) : ''
+    req.admin = jwt.verify(bearer || req.cookies?.[COOKIE] || '', SECRET()); next()
+  } catch { res.status(401).json({ error: 'Non connecté', code: 'AUTH' }) }
 }
 
 // ─── Espace CLIENT (vitrine) : jeton porteur (Bearer), stocké côté vitrine. ──
