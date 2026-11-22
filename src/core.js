@@ -68,6 +68,34 @@ async function issueLicenseKey(clinicId, plan, startsAt, endsAt, paymentId = nul
   return key
 }
 
+// ─── Création du compte super-admin sur l'instance web partagée ─────────────
+// Depuis l'espace client : crée le propriétaire (super-admin) de la clinique dans
+// l'instance clinique partagée, via son endpoint service POST /api/provision.
+// Nécessite une licence active + les variables CLINIC_INSTANCE_URL et PROVISION_SECRET.
+export async function provisionAdmin(clinicId, { email, password, first_name } = {}) {
+  const url = (process.env.CLINIC_INSTANCE_URL || '').replace(/\/+$/, '')
+  const secret = process.env.PROVISION_SECRET || ''
+  if (!url || !secret) throw err(503, "Création du super-admin non configurée (CLINIC_INSTANCE_URL / PROVISION_SECRET).")
+  email = String(email || '').toLowerCase().trim()
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(email)) throw err(400, 'E-mail valide requis')
+  if (String(password || '').length < 10) throw err(400, 'Mot de passe de 10 caractères minimum')
+  const c = (await q('select * from saas.clinics where id=$1', [clinicId])).rows[0]
+  if (!c) throw err(404, 'Compte introuvable')
+  const lk = (await q("select key from saas.license_keys where clinic_id=$1 and status='active' and ends_at>now() order by created_at desc limit 1", [clinicId])).rows[0]
+  if (!lk) throw err(402, "Aucune licence active. Démarrez votre essai ou votre abonnement avant de créer le super-admin.")
+  let resp, j
+  try {
+    resp = await fetch(url + '/api/provision', { method: 'POST',
+      headers: { 'content-type': 'application/json', 'x-provision-secret': secret },
+      body: JSON.stringify({ clinic: { name: c.display_name || c.name, license_cid: clinicId, license_key: lk.key, phone: c.phone || null, address: c.address || null },
+        owner: { email, password, first_name: first_name || c.name } }) })
+    j = await resp.json().catch(() => ({}))
+  } catch { throw err(502, "L'instance clinique est injoignable pour le moment. Réessayez dans un instant.") }
+  if (!resp.ok) throw err(resp.status === 400 ? 400 : 502, j.error || 'Échec de la création du super-admin')
+  await event(clinicId, 'admin_provisioned', { email, created: j.created })
+  return { ok: true, created: j.created, email, license_key: lk.key }
+}
+
 // ─── Statut effectif d'un abonnement ────────────────────────────────────────
 export function effectiveStatus(sub, at = now()) {
   if (!sub) return 'none'

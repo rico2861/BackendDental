@@ -67,6 +67,7 @@ app.post('/api/account/register', authLimit, wrap(async (req, res) => res.json(a
 app.post('/api/account/login', authLimit, wrap(async (req, res) => res.json(await core.loginAccount(req.body?.email, req.body?.password))))
 app.get('/api/account/me', requireClient, wrap(async (req, res) => res.json(await core.accountMe(req.client.cid))))
 app.post('/api/account/plan', requireClient, wrap(async (req, res) => res.json(await core.choosePlan(req.client.cid, req.body?.plan))))
+app.post('/api/account/provision-admin', requireClient, wrap(async (req, res) => res.json(await core.provisionAdmin(req.client.cid, req.body || {}))))
 app.post('/api/account/pay/moncash', requireClient, wrap(async (req, res) => res.json(await core.initiateMoncash({ clinic_id: req.client.cid, plan: req.body?.plan }))))
 app.get('/api/account/pay/verify', requireClient, wrap(async (req, res) => res.json(await core.verifyMoncash(req.query.payment_id))))
 app.post('/api/account/pay/virement', requireClient, wrap(async (req, res) => res.json(await core.requestVirement(req.client.cid, req.body?.plan))))
