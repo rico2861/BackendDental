@@ -19,7 +19,14 @@ export async function ensureAdmin() {
 export async function login(email, password) {
   const a = (await q('select * from saas.admins where email=$1', [String(email || '').toLowerCase()])).rows[0]
   if (!a || !bcrypt.compareSync(String(password || ''), a.password_hash)) throw Object.assign(new Error('E-mail ou mot de passe incorrect'), { status: 401 })
+  if (a.blocked) throw Object.assign(new Error('Compte administrateur bloqué. Contactez un propriétaire.'), { status: 403 })
   return jwt.sign({ id: a.id, email: a.email, role: a.role, jti: crypto.randomUUID() }, SECRET(), { expiresIn: '12h' })
+}
+
+// Réservé aux propriétaires (gestion des administrateurs).
+export function requireOwner(req, res, next) {
+  if (req.admin?.role === 'owner') return next()
+  res.status(403).json({ error: 'Action réservée aux propriétaires', code: 'FORBIDDEN' })
 }
 
 export function setCookie(res, token) {

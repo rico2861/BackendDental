@@ -39,6 +39,14 @@ const genId = () => 'c' + crypto.randomBytes(3).toString('hex')          // ex. 
 const genCode = name => (String(name || 'DL').toUpperCase().replace(/[^A-Z0-9]/g, '').slice(0, 6) || 'DL') + '-' +
   crypto.randomBytes(2).toString('hex').toUpperCase()                     // ex. SOLEIL-4F2A
 const refOf = (prefix, id) => `${prefix}-${String(id).padStart(6, '0')}`  // id plateforme unique (PAY-000123 / VIR-000123)
+// Mot de passe temporaire lisible (sans caractères ambigus)
+const genPassword = () => {
+  const A = 'ABCDEFGHJKLMNPQRSTUVWXYZ', a = 'abcdefghijkmnpqrstuvwxyz', d = '23456789'
+  const pick = s => s[crypto.randomInt(s.length)]
+  let p = pick(A) + pick(a) + pick(d)
+  for (let i = 0; i < 7; i++) p += pick(A + a + d)
+  return p + '!'
+}
 
 // ─── Clés de licence FORTES ─────────────────────────────────────────────────
 // Alphabet de 32 symboles sans caractères ambigus (ni I, O, 0, 1). Format
@@ -231,6 +239,91 @@ export async function proofUrl(paymentId) {
   const url = await presignGet(pay.proof_url, 600)
   if (!url) throw err(503, 'Stockage non configuré')
   return { url }
+}
+
+// ═══════════════════════════════════════════════════════════════════════════
+//  GESTION DES UTILISATEURS (admin) : administrateurs, comptes clients, accès
+// ═══════════════════════════════════════════════════════════════════════════
+// — Administrateurs de la console —
+export async function listAdmins() {
+  return (await q('select id,email,role,blocked,created_at from saas.admins order by created_at')).rows
+}
+export async function assertAdminActive(id) {
+  const a = (await q('select blocked from saas.admins where id=$1', [id])).rows[0]
+  if (!a) throw err(401, 'Compte administrateur introuvable', 'AUTH')
+  if (a.blocked) throw err(403, 'Votre compte administrateur est bloqué.', 'BLOCKED')
+}
+export async function createAdmin({ email, password, role = 'staff' }, byEmail) {
+  if (!email || !password) throw err(400, 'E-mail et mot de passe requis')
+  if (String(password).length < 8) throw err(400, 'Mot de passe trop court (8 caractères minimum)')
+  const e = String(email).trim().toLowerCase()
+  if ((await q('select 1 from saas.admins where email=$1', [e])).rows.length) throw err(409, 'Un administrateur existe déjà avec cet e-mail')
+  const r = (await q('insert into saas.admins(email,password_hash,role) values ($1,$2,$3) returning id,email,role,blocked,created_at',
+    [e, bcrypt.hashSync(String(password), 10), role === 'owner' ? 'owner' : 'staff'])).rows[0]
+  await event(null, 'admin_created', { email: e, role: r.role, by: byEmail })
+  return r
+}
+export async function setAdminRole(id, role, byEmail) {
+  await q('update saas.admins set role=$2 where id=$1', [id, role === 'owner' ? 'owner' : 'staff'])
+  await event(null, 'admin_role_changed', { admin_id: id, role, by: byEmail })
+  return (await q('select id,email,role,blocked from saas.admins where id=$1', [id])).rows[0]
+}
+export async function blockAdmin(id, blocked, byEmail, selfId) {
+  if (String(id) === String(selfId)) throw err(400, 'Vous ne pouvez pas vous bloquer vous-même')
+  if (blocked) {
+    const a = (await q('select role from saas.admins where id=$1', [id])).rows[0]
+    if (a?.role === 'owner') {
+      const n = (await q("select count(*)::int n from saas.admins where role='owner' and blocked=false and id<>$1", [id])).rows[0].n
+      if (n === 0) throw err(400, 'Impossible de bloquer le dernier propriétaire actif')
+    }
+  }
+  await q('update saas.admins set blocked=$2 where id=$1', [id, !!blocked])
+  await event(null, blocked ? 'admin_blocked' : 'admin_unblocked', { admin_id: id, by: byEmail })
+  return { ok: true }
+}
+export async function resetAdminPassword(id, newPassword, byEmail) {
+  const pwd = newPassword && String(newPassword).length >= 8 ? String(newPassword) : genPassword()
+  await q('update saas.admins set password_hash=$2 where id=$1', [id, bcrypt.hashSync(pwd, 10)])
+  await event(null, 'admin_password_reset', { admin_id: id, by: byEmail })
+  return { password: pwd }
+}
+export async function deleteAdmin(id, selfId, byEmail) {
+  if (String(id) === String(selfId)) throw err(400, 'Vous ne pouvez pas supprimer votre propre compte')
+  const a = (await q('select role from saas.admins where id=$1', [id])).rows[0]
+  if (a?.role === 'owner') {
+    const n = (await q("select count(*)::int n from saas.admins where role='owner' and id<>$1", [id])).rows[0].n
+    if (n === 0) throw err(400, 'Impossible de supprimer le dernier propriétaire')
+  }
+  await q('delete from saas.admins where id=$1', [id])
+  await event(null, 'admin_deleted', { admin_id: id, by: byEmail })
+  return { ok: true }
+}
+
+// — Compte client (clinique) : réinitialiser le mot de passe —
+export async function resetClinicPassword(clinicId, newPassword, byEmail) {
+  const c = (await q('select email,name from saas.clinics where id=$1', [clinicId])).rows[0]
+  if (!c) throw err(404, 'Clinique inconnue')
+  const pwd = newPassword && String(newPassword).length >= 6 ? String(newPassword) : genPassword()
+  await q('update saas.clinics set password_hash=$2, updated_at=now() where id=$1', [clinicId, bcrypt.hashSync(pwd, 10)])
+  await event(clinicId, 'client_password_reset', { by: byEmail })
+  return { password: pwd, email: c.email }
+}
+
+// — Accès manuel immédiat à un plan (sans paiement) : crée l'abonnement + la clé —
+export async function grantAccess(clinicId, plan, byEmail) {
+  if (plan !== '1m' && plan !== '1y') throw err(400, 'Formule invalide (1m ou 1y)')
+  const c = (await q('select * from saas.clinics where id=$1', [clinicId])).rows[0]
+  if (!c) throw err(404, 'Clinique inconnue')
+  const cur = await latestSub(clinicId)
+  const start = cur && new Date(cur.period_end) > now() ? new Date(cur.period_end) : now()
+  const end = addDays(start, PLAN_DURATIONS[plan])
+  const seats = cur ? cur.seats : 2
+  await q(`insert into saas.subscriptions(clinic_id,plan,seats,period_start,period_end,status) values ($1,$2,$3,$4,$5,'active')`, [clinicId, plan, seats, start, end])
+  await q("update saas.clinics set status='active', data_retention_until=null, updated_at=now() where id=$1", [clinicId])
+  const key = await issueLicenseKey(clinicId, plan, start, end, null)
+  safe(mail.licenseKey({ to: c.email, clinic: c.name, key, plan, startsAt: start, endsAt: end }))
+  await event(clinicId, 'access_granted', { plan, by: byEmail, ends_at: end })
+  return { license_key: key, plan, ends_at: end }
 }
 
 // Vérifie automatiquement auprès de MonCash les paiements encore en attente.

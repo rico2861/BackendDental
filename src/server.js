@@ -11,7 +11,7 @@ import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
 import { ensureSchema, dbKind } from './db.js'
-import { ensureAdmin, login, setCookie, clearCookie, requireAdmin, requireClient } from './auth.js'
+import { ensureAdmin, login, setCookie, clearCookie, requireAdmin, requireClient, requireOwner } from './auth.js'
 import * as core from './core.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -96,6 +96,8 @@ app.get('/admin/api/me', requireAdmin, (req, res) => res.json({ email: req.admin
 // ─── API d'administration (protégée) ─────────────────────────────────────────
 const admin = express.Router()
 admin.use(requireAdmin)
+// Un admin bloqué perd l'accès immédiatement (contrôle en base à chaque requête).
+admin.use((req, res, next) => core.assertAdminActive(req.admin.id).then(() => next()).catch(e => res.status(e.status || 403).json({ error: e.message, code: e.code })))
 admin.get('/overview', wrap(async (req, res) => res.json(await core.overview())))
 admin.get('/clinics', wrap(async (req, res) => res.json(await core.listClinics())))
 admin.post('/clinics', wrap(async (req, res) => res.json(await core.createClinic(req.body || {}))))
@@ -119,6 +121,16 @@ admin.patch('/bank-accounts/:id', wrap(async (req, res) => res.json(await core.u
 admin.delete('/bank-accounts/:id', wrap(async (req, res) => res.json(await core.deleteBankAccount(req.params.id))))
 // Preuve de virement (URL signée temporaire)
 admin.get('/payments/:id/proof-url', wrap(async (req, res) => res.json(await core.proofUrl(req.params.id))))
+// Administrateurs (propriétaires uniquement)
+admin.get('/admins', requireOwner, wrap(async (req, res) => res.json(await core.listAdmins())))
+admin.post('/admins', requireOwner, wrap(async (req, res) => res.json(await core.createAdmin(req.body || {}, req.admin.email))))
+admin.patch('/admins/:id/role', requireOwner, wrap(async (req, res) => res.json(await core.setAdminRole(req.params.id, req.body?.role, req.admin.email))))
+admin.post('/admins/:id/block', requireOwner, wrap(async (req, res) => res.json(await core.blockAdmin(req.params.id, req.body?.blocked !== false, req.admin.email, req.admin.id))))
+admin.post('/admins/:id/reset-password', requireOwner, wrap(async (req, res) => res.json(await core.resetAdminPassword(req.params.id, req.body?.password, req.admin.email))))
+admin.delete('/admins/:id', requireOwner, wrap(async (req, res) => res.json(await core.deleteAdmin(req.params.id, req.admin.id, req.admin.email))))
+// Compte client (clinique) : réinitialiser le mot de passe + accès manuel immédiat
+admin.post('/clinics/:id/reset-password', wrap(async (req, res) => res.json(await core.resetClinicPassword(req.params.id, req.body?.password, req.admin.email))))
+admin.post('/clinics/:id/grant', wrap(async (req, res) => res.json(await core.grantAccess(req.params.id, req.body?.plan, req.admin.email))))
 app.use('/admin/api', admin)
 
 // ─── Frontend de la console (optionnel : absent si la console est hébergée à part)
