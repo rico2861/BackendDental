@@ -41,4 +41,5 @@ export async function ensureSchema() {
   await i.exec("alter table saas.clinics add column if not exists activation_code text")
   await i.exec("alter table saas.clinics add column if not exists data_retention_until timestamptz")
   await i.exec("alter table saas.clinics add column if not exists password_hash text")
+  await i.exec("alter table saas.clinics add column if not exists address text")
 }

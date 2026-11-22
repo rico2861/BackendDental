@@ -69,17 +69,31 @@ async function latestSub(clinicId) {
 async function event(clinicId, type, data = {}) {
   await q('insert into saas.events(clinic_id,type,data) values ($1,$2,$3)', [clinicId, type, JSON.stringify(data)])
 }
-function brandOf(c) { return { color: c.brand_color || null, name: c.display_name || c.name, logo: c.logo_url || null } }
+// Profil complet renvoyé à l'app lors de l'activation (1re fois) : nom, email,
+// adresse, ville, téléphone, logo, couleur. L'app le stocke et l'affiche.
+function brandOf(c) {
+  return {
+    clinic_id: c.id,
+    color: c.brand_color || null,
+    name: c.display_name || c.name,
+    legal_name: c.name,
+    logo: c.logo_url || null,
+    email: c.email || null,
+    phone: c.phone || null,
+    city: c.city || null,
+    address: c.address || null
+  }
+}
 
 // ─── Créer une clinique (+ essai gratuit 15 jours) ──────────────────────────
-export async function createClinic({ name, email, phone, city, seats = 2 }) {
+export async function createClinic({ name, email, phone, city, address, seats = 2 }) {
   if (!name || !email) throw err(400, 'Nom et e-mail requis')
   let id, code
   for (let i = 0; i < 6; i++) { id = genId(); if (!(await q('select 1 from saas.clinics where id=$1', [id])).rows.length) break }
   for (let i = 0; i < 6; i++) { code = genCode(name); if (!(await q('select 1 from saas.clinics where activation_code=$1', [code])).rows.length) break }
   try {
-    await q(`insert into saas.clinics(id,name,email,phone,city,status,activation_code,display_name)
-             values ($1,$2,$3,$4,$5,'trial',$6,$2)`, [id, name, email, phone || null, city || null, code])
+    await q(`insert into saas.clinics(id,name,email,phone,city,address,status,activation_code,display_name)
+             values ($1,$2,$3,$4,$5,$6,'trial',$7,$2)`, [id, name, email, phone || null, city || null, address || null, code])
   } catch (e) { if (/unique/i.test(e.message) && /email/i.test(e.message)) throw err(409, 'Un compte existe déjà avec cet e-mail'); throw e }
   const end = addDays(now(), PLAN_DURATIONS.trial)
   await q(`insert into saas.subscriptions(clinic_id,plan,seats,period_start,period_end,status)
@@ -96,11 +110,11 @@ const esc = s => String(s ?? '').replace(/[&<>]/g, c => ({ '&': '&amp;', '<': '&
 //  ESPACE CLIENT (vitrine) : compte (mot de passe) → plan → paiement → licence
 // ═══════════════════════════════════════════════════════════════════════════
 function publicClinic(c) {
-  return { id: c.id, name: c.name, email: c.email, phone: c.phone, city: c.city, status: c.status, display_name: c.display_name }
+  return { id: c.id, name: c.name, email: c.email, phone: c.phone, city: c.city, address: c.address, status: c.status, display_name: c.display_name, logo_url: c.logo_url, brand_color: c.brand_color }
 }
 
 // Créer un compte (aucune licence émise ici : elle vient du plan/paiement).
-export async function registerAccount({ name, email, password, phone, city }) {
+export async function registerAccount({ name, email, password, phone, city, address }) {
   if (!name || !email || !password) throw err(400, 'Nom, e-mail et mot de passe requis')
   if (String(password).length < 6) throw err(400, 'Mot de passe trop court (6 caractères minimum)')
   const e = String(email).trim().toLowerCase()
@@ -109,8 +123,8 @@ export async function registerAccount({ name, email, password, phone, city }) {
   let id
   for (let i = 0; i < 8; i++) { id = genId(); if (!(await q('select 1 from saas.clinics where id=$1', [id])).rows.length) break }
   const hash = bcrypt.hashSync(String(password), 10)
-  await q(`insert into saas.clinics(id,name,email,phone,city,status,display_name,password_hash)
-           values ($1,$2,$3,$4,$5,'registered',$2,$6)`, [id, name, e, phone || null, city || null, hash])
+  await q(`insert into saas.clinics(id,name,email,phone,city,address,status,display_name,password_hash)
+           values ($1,$2,$3,$4,$5,$6,'registered',$2,$7)`, [id, name, e, phone || null, city || null, address || null, hash])
   await event(id, 'account_created', {})
   safe(mail.teamAlert({ subject: 'Nouveau compte', html: `${esc(name)} — ${esc(e)}` }))
   const clinic = (await q('select * from saas.clinics where id=$1', [id])).rows[0]
@@ -320,7 +334,7 @@ export async function reinstateClinic(clinicId, adminEmail) {
 // ─── Mise à jour (personnalisation + sièges) ────────────────────────────────
 export async function updateClinic(clinicId, patch = {}) {
   const sets = [], vals = [clinicId]
-  for (const [k, col] of [['brand_color', 'brand_color'], ['display_name', 'display_name'], ['logo_url', 'logo_url'], ['name', 'name'], ['phone', 'phone'], ['email', 'email'], ['city', 'city']]) {
+  for (const [k, col] of [['brand_color', 'brand_color'], ['display_name', 'display_name'], ['logo_url', 'logo_url'], ['name', 'name'], ['phone', 'phone'], ['email', 'email'], ['city', 'city'], ['address', 'address']]) {
     if (patch[k] !== undefined) { vals.push(patch[k]); sets.push(`${col}=$${vals.length}`) }
   }
   if (sets.length) await q(`update saas.clinics set ${sets.join(',')}, updated_at=now() where id=$1`, vals)
@@ -367,18 +381,43 @@ export async function getClinic(id) {
 }
 
 export async function overview() {
-  const clinics = await listClinics()
+  const pr = prices()
+  // Toutes les requêtes indépendantes en parallèle (1 aller-retour au lieu de ~8).
+  const [clinics, hostsR, revenueR, backups24R, pendingR, eventsR, revByMonthR, signByMonthR] = await Promise.all([
+    listClinics(),
+    q("select count(*)::int n from saas.hosts where status='active'"),
+    q("select coalesce(sum(amount),0)::float t, currency from saas.payments where status='confirmed' group by currency"),
+    q("select count(*)::int ok from saas.backups where verified and created_at > now() - interval '24 hours'"),
+    q("select p.*, c.name clinic_name from saas.payments p join saas.clinics c on c.id=p.clinic_id where p.status='pending' order by p.created_at desc"),
+    q(`select e.*, c.name clinic_name from saas.events e left join saas.clinics c on c.id=e.clinic_id order by e.created_at desc limit 40`),
+    q(`select to_char(date_trunc('month', confirmed_at),'YYYY-MM') m, coalesce(sum(amount),0)::float t
+       from saas.payments where status='confirmed' and confirmed_at > now() - interval '6 months' group by 1`),
+    q(`select to_char(date_trunc('month', created_at),'YYYY-MM') m, count(*)::int n
+       from saas.clinics where created_at > now() - interval '6 months' group by 1`)
+  ])
+  const hosts = hostsR.rows[0].n, revenue = revenueR.rows, backups24 = backups24R.rows[0].ok
+  const pendingPayments = pendingR.rows, recentEvents = eventsR.rows, revByMonth = revByMonthR.rows, signByMonth = signByMonthR.rows
   const byStatus = { trial: 0, active: 0, grace: 0, expired: 0, suspended: 0 }
   for (const c of clinics) { const k = c.status === 'suspended' ? 'suspended' : c.effective; byStatus[k] = (byStatus[k] || 0) + 1 }
-  const hosts = (await q("select count(*)::int n from saas.hosts where status='active'")).rows[0].n
-  const revenue = (await q("select coalesce(sum(amount),0)::float t, currency from saas.payments where status='confirmed' group by currency")).rows
-  const backups24 = (await q("select count(*)::int ok from saas.backups where verified and created_at > now() - interval '24 hours'")).rows[0].ok
   const expiringSoon = clinics.filter(c => c.period_end && new Date(c.period_end) > now() && new Date(c.period_end) < addDays(now(), 7) && c.status !== 'suspended')
     .map(c => ({ id: c.id, name: c.name, period_end: c.period_end, effective: c.effective }))
   const seatsFull = clinics.filter(c => c.seats && c.hosts_used >= c.seats).map(c => ({ id: c.id, name: c.name, hosts_used: c.hosts_used, seats: c.seats }))
-  const pendingPayments = (await q("select p.*, c.name clinic_name from saas.payments p join saas.clinics c on c.id=p.clinic_id where p.status='pending' order by p.created_at desc")).rows
-  const recentEvents = (await q(`select e.*, c.name clinic_name from saas.events e left join saas.clinics c on c.id=e.clinic_id order by e.created_at desc limit 40`)).rows
-  return { counts: { ...byStatus, total: clinics.length, hosts }, revenue, backups24, expiringSoon, seatsFull, pendingPayments, recentEvents }
+  const months = []
+  for (let i = 5; i >= 0; i--) { const d = new Date(now().getFullYear(), now().getMonth() - i, 1); months.push(d.toISOString().slice(0, 7)) }
+  const revMap = Object.fromEntries(revByMonth.map(r => [r.m, r.t])), signMap = Object.fromEntries(signByMonth.map(r => [r.m, r.n]))
+  const revenueSeries = months.map(m => ({ m, t: revMap[m] || 0 }))
+  const signupsSeries = months.map(m => ({ m, n: signMap[m] || 0 }))
+  // ── Revenu du mois courant + MRR (revenu mensuel récurrent estimé) ──
+  const nowMonth = now().toISOString().slice(0, 7)
+  const revenueMonth = revMap[nowMonth] || 0
+  let mrr = 0
+  for (const c of clinics) { if (c.effective === 'active' && c.plan === '1m') mrr += pr['1m']; else if (c.effective === 'active' && c.plan === '1y') mrr += pr['1y'] / 12 }
+  const conversion = clinics.length ? Math.round((byStatus.active / clinics.length) * 100) : 0
+  return {
+    counts: { ...byStatus, total: clinics.length, hosts },
+    revenue, revenueMonth, mrr: Math.round(mrr), currency: pr.currency, conversion,
+    backups24, expiringSoon, seatsFull, pendingPayments, recentEvents, revenueSeries, signupsSeries
+  }
 }
 
 // ─── MonCash : initiation + vérification automatique ────────────────────────

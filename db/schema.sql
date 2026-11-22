@@ -19,6 +19,7 @@ create table if not exists clinics (
   email         text not null unique,
   phone         text,
   city          text,
+  address       text,                             -- adresse de la clinique (affichée dans l'app)
   status        text not null default 'trial',    -- trial | active | grace | expired | suspended | cancelled
   -- Personnalisation renvoyée à l'app (couleur, nom affiché, logo)
   brand_color   text default '#12408f',
