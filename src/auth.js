@@ -7,13 +7,47 @@ import { q } from './db.js'
 const SECRET = () => process.env.SAAS_JWT_SECRET || 'dev-console-secret-change-me'
 const COOKIE = 'dlsaas'
 
+const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex')
+
 export async function ensureAdmin() {
   const n = (await q('select count(*)::int c from saas.admins')).rows[0].c
-  if (n > 0) return
+  if (n > 0) { await q('delete from saas.bootstrap').catch(() => {}); return }   // admin présent → plus d'amorçage
+  // Option héritée (déconseillée) : amorçage par variables d'environnement. À éviter : le mot de passe traîne en clair dans l'env.
   const email = process.env.SAAS_ADMIN_EMAIL, pwd = process.env.SAAS_ADMIN_PASSWORD
-  if (!email || !pwd) { console.log('⚠  Aucun admin. Définissez SAAS_ADMIN_EMAIL et SAAS_ADMIN_PASSWORD pour créer le compte propriétaire.'); return }
-  await q('insert into saas.admins(email,password_hash,role) values ($1,$2,$3)', [email.toLowerCase(), bcrypt.hashSync(pwd, 10), 'owner'])
-  console.log('✓ Compte admin créé :', email)
+  if (email && pwd) {
+    await q('insert into saas.admins(email,password_hash,role) values ($1,$2,$3)', [email.toLowerCase(), bcrypt.hashSync(pwd, 12), 'owner'])
+    console.log('✓ Compte admin créé depuis l’environnement :', email, '— retirez maintenant SAAS_ADMIN_PASSWORD de l’environnement (le hachage est en base).')
+    return
+  }
+  // Amorçage sécurisé : un code à usage unique, affiché UNE fois dans les logs, stocké haché (jamais en clair).
+  const row = (await q('select token_hash from saas.bootstrap where id=1')).rows[0]
+  if (!row?.token_hash) {
+    const token = 'BOOT-' + crypto.randomBytes(18).toString('base64url')
+    await q('insert into saas.bootstrap(id,token_hash,created_at) values (1,$1,now()) on conflict (id) do update set token_hash=$1, created_at=now()', [sha(token)])
+    console.log('\n────────────────────────────────────────────────────────────')
+    console.log('  AUCUN ADMIN PLATEFORME — créez le compte propriétaire :')
+    console.log('  POST /admin/api/bootstrap  { email, password, token }')
+    console.log('  Code à usage unique (ne sera plus affiché) :', token)
+    console.log('────────────────────────────────────────────────────────────\n')
+  } else {
+    console.log('⚠  Aucun admin. Un code d’amorçage a déjà été émis (voir un log de démarrage précédent). Redéployez pour en générer un nouveau.')
+  }
+}
+
+// Crée le 1er administrateur (propriétaire) via le code d'amorçage. Mot de passe haché en base, jamais stocké en clair ni en environnement.
+export async function bootstrapAdmin({ email, password, token } = {}) {
+  const n = (await q('select count(*)::int c from saas.admins')).rows[0].c
+  if (n > 0) throw Object.assign(new Error('Amorçage déjà effectué : un administrateur existe.'), { status: 403 })
+  const row = (await q('select token_hash from saas.bootstrap where id=1')).rows[0]
+  if (!row?.token_hash) throw Object.assign(new Error('Amorçage indisponible. Redéployez le service pour générer un nouveau code.'), { status: 403 })
+  const a = Buffer.from(sha(token || '')), b = Buffer.from(row.token_hash)
+  if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) throw Object.assign(new Error('Code d’amorçage invalide.'), { status: 401 })
+  const e = String(email || '').trim().toLowerCase()
+  if (!/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(e)) throw Object.assign(new Error('E-mail valide requis'), { status: 400 })
+  if (String(password || '').length < 10) throw Object.assign(new Error('Mot de passe de 10 caractères minimum'), { status: 400 })
+  await q('insert into saas.admins(email,password_hash,role) values ($1,$2,$3)', [e, bcrypt.hashSync(String(password), 12), 'owner'])
+  await q('delete from saas.bootstrap')
+  return { ok: true, email: e }
 }
 
 export async function login(email, password) {

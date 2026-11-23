@@ -48,4 +48,6 @@ export async function ensureSchema() {
   await i.exec("create unique index if not exists uq_pay_ref on saas.payments(ref)")
   await i.exec("create unique index if not exists uq_pay_moncash_tx on saas.payments(moncash_transaction_id) where moncash_transaction_id is not null")
   await i.exec("alter table saas.admins add column if not exists blocked boolean not null default false")
+  // Amorçage sécurisé du 1er admin : code à usage unique haché, aucun mot de passe en environnement
+  await i.exec("create table if not exists saas.bootstrap (id int primary key, token_hash text, created_at timestamptz default now())")
 }

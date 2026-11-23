@@ -10,8 +10,8 @@ import express from 'express'
 import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
-import { ensureSchema, dbKind } from './db.js'
-import { ensureAdmin, login, setCookie, clearCookie, requireAdmin, requireClient, requireOwner } from './auth.js'
+import { ensureSchema, dbKind, q } from './db.js'
+import { ensureAdmin, bootstrapAdmin, login, setCookie, clearCookie, requireAdmin, requireClient, requireOwner } from './auth.js'
 import * as core from './core.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -91,6 +91,16 @@ app.get('/pay/retour', wrap(async (req, res) => {
 }))
 
 // ─── Authentification de la console ──────────────────────────────────────────
+// Amorçage du 1er admin (si aucun) : la console affiche un formulaire quand needs_bootstrap=true.
+app.get('/admin/api/state', wrap(async (req, res) => {
+  const n = (await q('select count(*)::int c from saas.admins')).rows[0].c
+  res.json({ needs_bootstrap: n === 0 })
+}))
+app.post('/admin/api/bootstrap', rateLimit({ windowMs: 60000, max: 8 }), wrap(async (req, res) => {
+  const r = await bootstrapAdmin(req.body || {})
+  const token = await login(r.email, req.body?.password); setCookie(res, token)
+  res.json({ ok: true, token, email: r.email })
+}))
 app.post('/admin/api/login', rateLimit({ windowMs: 60000, max: 10 }), wrap(async (req, res) => {
   const token = await login(req.body?.email, req.body?.password); setCookie(res, token); res.json({ ok: true, token })
 }))
