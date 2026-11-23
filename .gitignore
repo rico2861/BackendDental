@@ -4,3 +4,9 @@ keys/*.private.pem
 .env
 node_modules/
 *.log
+
+# Données runtime du logiciel clinique (jamais versionnées)
+clinic/backend/data/
+clinic/backend/storage/
+clinic/backend/backups/
+clinic/backend/.env
