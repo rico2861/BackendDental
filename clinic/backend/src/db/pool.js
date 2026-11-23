@@ -54,7 +54,7 @@ if (DB_URL) {
   pg_pool.on('error', e => console.error('Pool Postgres :', e.message))
   // Filet de sécurité : certains poolers (pgBouncer/Supavisor) ignorent les options de démarrage.
   // On refixe search_path + fuseau à l'ouverture de CHAQUE connexion (pooler en mode SESSION requis).
-  pg_pool.on('connect', c => { c.query(`set search_path to ${SCHEMA}, public`).catch(() => {}); c.query(`set time zone '${TZ}'`).catch(() => {}) })
+  pg_pool.on('connect', c => { c.query(`set search_path to ${SCHEMA}, public; set time zone '${TZ}'`).catch(() => {}) })
 
   // le schéma dédié doit exister avant les migrations
   { const c = await pg_pool.connect(); try { await c.query(`create schema if not exists ${SCHEMA}`) } finally { c.release() } }
