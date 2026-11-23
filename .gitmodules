@@ -1,0 +1,3 @@
+[submodule "clinic"]
+	path = clinic
+	url = https://github.com/rico2861/DentalClient
