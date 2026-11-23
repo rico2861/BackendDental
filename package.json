@@ -5,11 +5,12 @@
   "type": "module",
   "description": "DENTAL — plateforme SaaS (console d'administration, serveur de licences, site vitrine).",
   "scripts": {
-    "start": "node src/server.js",
+    "start": "node src/index.js",
     "keygen": "node scripts/keygen.js",
     "test:license": "node scripts/test-license.js",
     "test:trial": "node scripts/test-trial.js",
-    "test:console": "node scripts/test-console.mjs"
+    "test:console": "node scripts/test-console.mjs",
+    "start:saas-only": "node src/server.js"
   },
   "dependencies": {
     "@aws-sdk/client-s3": "^3.1175.0",
@@ -21,6 +22,10 @@
     "express-rate-limit": "^7.4.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "pg": "^8.13.1"
+    "pg": "^8.13.1",
+    "dotenv": "^16.4.5",
+    "exceljs": "^4.4.0",
+    "pdfkit": "^0.20.2",
+    "qrcode": "^1.5.4"
   }
 }

@@ -147,7 +147,9 @@ if (fs.existsSync(path.join(WEB, 'index.html'))) {
   app.get('/', (req, res) => res.json({ service: 'DENTAL — SaaS API', status: 'ok' }))
 }
 
-export async function start() {
+// Prépare la base + l'admin + les tâches de fond, SANS écouter de port.
+// Appelé soit par start() (service autonome), soit par le service unique (src/index.js).
+export async function init() {
   await ensureSchema()
   await ensureAdmin()
   console.log('Base de la console :', await dbKind())
@@ -157,9 +159,10 @@ export async function start() {
   // MonCash : vérification automatique du statut des paiements en attente
   const mcPoll = () => core.autoVerifyMoncash().then(r => (r.confirmed || r.failed) && console.log('MonCash auto :', r)).catch(() => {})
   setInterval(mcPoll, 90000).unref?.()
-  return app.listen(PORT, () => console.log('Console SaaS prête sur le port', PORT))
 }
+export async function start() { await init(); return app.listen(PORT, () => console.log('Console SaaS prête sur le port', PORT)) }
 
-if (process.env.NODE_ENV !== 'test') start().catch(e => { console.error('Démarrage console:', e); process.exit(1) })
+// Démarrage autonome uniquement : en service unique (MOUNTED=1) c'est src/index.js qui pilote.
+if (process.env.NODE_ENV !== 'test' && !process.env.MOUNTED) start().catch(e => { console.error('Démarrage console:', e); process.exit(1) })
 
 export { app }
