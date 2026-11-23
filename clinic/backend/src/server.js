@@ -5,6 +5,7 @@ import cookieParser from 'cookie-parser'; import jwt from 'jsonwebtoken'; import
 import { pool, q, actorCtx } from './db/pool.js'
 import { payPlan } from './lib/billing-core.js'
 import { migrate, ensureOwner, provisionClinic } from './db/migrate.js'
+import { sendBrandedMail, esc } from './lib/brand.js'
 import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import { startScheduler } from './lib/backup.js'; import { startAlerts, runAlerts } from './lib/alerts.js'
 import { ALL, SENSITIVE, ROLES, makePermissions, assignedSql } from './core/permissions.js'
 import billing from './routes/billing.js'; import clinical from './routes/clinical.js'; import stock from './routes/stock.js'; import cash from './routes/cash.js'
@@ -277,7 +278,15 @@ app.post('/api/users', need('manage_users'), wrap(async (req, res) => {
     const { rows: [u] } = await q('insert into users(clinic_id,email,password_hash,first_name,last_name,role,job_title,created_by,username) values($1,$2,$3,$4,$5,$6,$7,$8,$9) returning id',
       [req.user.clinic_id, email, await bcrypt.hash(pw, 12), fn, ln, role, clean(req.body.job_title), req.user.id, username])
     await q('insert into employees(clinic_id,user_id,first_name,last_name,job_title,base_salary,commission_pct,hire_date) values($1,$2,$3,$4,$5,$6,$7,current_date)', [req.user.clinic_id, u.id, fn, ln, clean(req.body.job_title) || (role === 'DENTIST' ? 'Médecin dentiste' : null), pp.base, pp.pct])
-    await audit(req, 'USER_CREATED', 'users', u.id, { role, base_salary: pp.base, commission_pct: pp.pct }); if (role.startsWith('ADMIN')) await notify(req.user.clinic_id, 'admin_created', 'Administrateur créé', `${email} (${role}) par ${req.user.email}`); res.json({ id: u.id, username, temporary_password: pw })
+    await audit(req, 'USER_CREATED', 'users', u.id, { role, base_salary: pp.base, commission_pct: pp.pct }); if (role.startsWith('ADMIN')) await notify(req.user.clinic_id, 'admin_created', 'Administrateur créé', `${email} (${role}) par ${req.user.email}`)
+    // Bienvenue au nouveau membre : identifiants + instructions, au nom de la clinique (n'interrompt pas la création si l'envoi échoue)
+    const RLBL = { ADMIN: 'Administrateur', ADMIN_MEDICAL: 'Administrateur médical', ADMIN_FINANCIER: 'Administrateur financier', DENTIST: 'Médecin dentiste', DENTAL_ASSISTANT: 'Assistant(e) dentaire', SECRETARY: 'Secrétaire', ACCOUNTANT: 'Comptable', STOCK_MANAGER: 'Gestionnaire de stock', DENTAL_TECH: 'Prothésiste', STAFF: 'Personnel' }
+    sendBrandedMail(q, req.user.clinic_id, { to: email, subject: 'Vos identifiants de connexion', heading: 'Bienvenue dans l’équipe',
+      bodyHtml: `<p>Bonjour ${esc(fn)},</p><p>Un accès au logiciel de la clinique vous a été créé en tant que <b>${esc(RLBL[role] || role)}</b>.</p>
+        <table style="margin:10px 0;border-collapse:collapse"><tr><td style="padding:4px 10px 4px 0;color:#5d6f6a">Identifiant</td><td><b>${esc(username)}</b> (ou votre e-mail)</td></tr>
+        <tr><td style="padding:4px 10px 4px 0;color:#5d6f6a">Mot de passe temporaire</td><td><b>${esc(pw)}</b></td></tr></table>
+        <p>Connectez-vous via l’onglet <b>Personnel</b>. Pour votre sécurité, un nouveau mot de passe vous sera demandé à la première connexion.</p>` }).catch(() => {})
+    res.json({ id: u.id, username, temporary_password: pw })
   } catch (e) { if (e.code === '23505') return fail(res, 409, 'Email déjà utilisé'); throw e }
 }))
 const target = wrap(async (req, res, next) => {

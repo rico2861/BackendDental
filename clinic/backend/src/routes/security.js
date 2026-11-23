@@ -13,6 +13,7 @@ export const QUIET = ['user_role', '2fa_enabled', 'rate_changed']
 export const notify = (q, clinic, kind, title, text, perm = 'view_audit_logs', userId = null) => QUIET.includes(kind) ? Promise.resolve() : q('insert into notifications(clinic_id,user_id,perm,kind,title,text) values($1,$2,$3,$4,$5,$6)', [clinic, userId, perm, kind, title, text]).catch(() => {})
 // ── codes à usage unique : envoyés par e-mail, ou délivrés par la direction (fonctionnent sans Internet) ──
 import { sendMail, deliver, resendReady } from '../lib/mail.js'
+import { clinicBrand, brandedEmail, esc } from '../lib/brand.js'
 import { status as licenseStatus, fingerprint as hostFingerprint } from '../lib/license.js'
 export const maskEmail = e => String(e || '').replace(/^(.{1,2})[^@]*(@.*)$/, (m, a, b) => a + '•••' + b)
 export const mailCfg = async (q, clinicId) => { const s = (await q('select smtp from clinics where id=$1', [clinicId])).rows[0]?.smtp; return s?.host && s?.from ? { ...s, pass: s.pass_enc ? dec(s.pass_enc) : '' } : null }
@@ -24,8 +25,12 @@ export async function sendEmailCode(q, u, kind = 'email') {
   const last = (await q("select created_at from login_codes where user_id=$1 and kind=$2 order by created_at desc limit 1", [u.id, kind])).rows[0]; if (last && Date.now() - new Date(last.created_at) < 30e3) return { sent: true, recent: true, to: maskEmail(u.email), wait: true }
   const code = await newCode(q, u.id, kind, 10)
   let relay = null; try { const ls = licenseStatus(); relay = { clinic_id: ls.clinic_id, fingerprint: hostFingerprint() } } catch {}
-  try { await deliver({ cfg, relay, to: u.email, subject: `${code} — votre code de connexion Dental Assist`, text: `Bonjour ${u.first_name},\n\nVotre code de connexion à usage unique : ${code}\nIl est valable 10 minutes et ne peut servir qu'une fois.\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction de la clinique.`,
-      html: `<div style="font-family:Arial,sans-serif;max-width:480px;margin:auto;padding:24px;border:1px solid #e3e8ef;border-radius:14px"><h2 style="color:#0f2a5c;margin:0 0 8px">Dental Assist</h2><p>Bonjour ${u.first_name},</p><p>Votre code de connexion à usage unique :</p><p style="font-size:32px;letter-spacing:8px;font-weight:bold;color:#1d6fd8;margin:12px 0">${code}</p><p style="color:#5b6778">Valable 10 minutes, utilisable une seule fois. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction.</p></div>` })
+  const brand = await clinicBrand(q, u.clinic_id)
+  const html = brandedEmail(brand, { heading: 'Code de connexion', bodyHtml:
+    `<p>Bonjour ${esc(u.first_name)},</p><p>Votre code de connexion à usage unique :</p>
+     <p style="font-size:32px;letter-spacing:8px;font-weight:bold;color:#107a6d;margin:14px 0">${code}</p>
+     <p style="color:#5d6f6a;font-size:13px">Valable 10 minutes, utilisable une seule fois. Si vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction.</p>` })
+  try { await deliver({ cfg, relay, fromName: brand.name, to: u.email, subject: `${code} — code de connexion ${brand.name}`, text: `Bonjour ${u.first_name},\n\nVotre code de connexion à usage unique : ${code}\nIl est valable 10 minutes et ne peut servir qu'une fois.\n\nSi vous n'êtes pas à l'origine de cette demande, ignorez ce message et prévenez la direction.`, html })
     return { sent: true, to: maskEmail(u.email) } }
   catch (e) { await q("update login_codes set used_at=now() where user_id=$1 and kind=$2 and used_at is null", [u.id, kind]); return { sent: false, reason: e.message } } }
 export async function verifyCode(q, u, code, kinds = ['email', 'owner']) { code = String(code || '').replace(/\s/g, ''); if (!/^\d{6,8}$/.test(code)) return false
@@ -66,6 +71,25 @@ export default function (app, { q, pool, need, auth, audit, fail, wrap, clean })
     const s = { host, port, user: clean(b.user, 120) || '', from, pass_enc: b.pass ? enc(String(b.pass)) : cur.pass_enc }; await q('update clinics set smtp=$2 where id=$1', [req.user.clinic_id, s]); await audit(req, 'MAIL_SETTINGS', 'clinics', req.user.clinic_id, { host, port, from }); res.json({ ok: true }) }))
   app.post('/api/settings/mail/test', need(), wrap(async (req, res) => { if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire'); const cfg = await mailCfg(q, req.user.clinic_id); if (!cfg) return fail(res, 400, "Configurez d'abord le serveur d'e-mail")
     try { await sendMail({ ...cfg, to: req.user.email, subject: 'Test DENTAL : envoi des e-mails opérationnel', text: "Ce message confirme que DENTAL peut envoyer les codes de connexion par e-mail." }); res.json({ ok: true, to: req.user.email }) } catch (e) { fail(res, 502, e.message) } }))
+  // ── identité / personnalisation de la clinique (nom, logo, coordonnées) — reprise sur documents et e-mails ──
+  app.get('/api/settings/clinic', need(), wrap(async (req, res) => {
+    const c = (await q('select name,address,phone,email,website,logo from clinics where id=$1', [req.user.clinic_id])).rows[0] || {}
+    res.json({ name: c.name || '', address: c.address || '', phone: c.phone || '', email: c.email || '', website: c.website || '', logo: c.logo || '' }) }))
+  app.put('/api/settings/clinic', need(), wrap(async (req, res) => {
+    if (req.user.role !== 'OWNER') return fail(res, 403, 'Réservé au propriétaire')
+    const b = req.body || {}
+    const name = clean(b.name, 120); if (!name) return fail(res, 400, 'Le nom de la clinique est requis')
+    const email = b.email ? (clean(b.email, 120) || '').toLowerCase() : ''
+    if (email && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) return fail(res, 400, 'E-mail de la clinique invalide')
+    let website = b.website ? (clean(b.website, 160) || '') : ''
+    if (website && !/^https?:\/\//i.test(website)) website = 'https://' + website
+    let logo = typeof b.logo === 'string' ? b.logo.trim() : ''
+    if (logo && !/^data:image\/(png|jpe?g|webp|svg\+xml);base64,/i.test(logo) && !/^https?:\/\//i.test(logo)) return fail(res, 400, 'Logo : image PNG/JPG/WEBP/SVG ou URL')
+    if (logo.length > 400000) return fail(res, 400, 'Logo trop lourd (max ~280 Ko). Choisissez une image plus petite.')
+    await q('update clinics set name=$2,address=$3,phone=$4,email=$5,website=$6,logo=$7 where id=$1',
+      [req.user.clinic_id, name, clean(b.address, 200) || null, clean(b.phone, 40) || null, email || null, website || null, logo || null])
+    await audit(req, 'CLINIC_SETTINGS', 'clinics', req.user.clinic_id, { name })
+    res.json({ ok: true }) }))
   // ── double authentification par e-mail ──
   app.post('/api/2fa/email/start', auth, wrap(async (req, res) => { const r = await sendEmailCode(q, req.user, 'setup'); if (!r.sent) return fail(res, 400, r.reason); res.json(r) }))
   app.post('/api/2fa/email/confirm', auth, wrap(async (req, res) => { if (!(await verifyCode(q, req.user, req.body.code, ['setup']))) return fail(res, 400, 'Code invalide ou expiré')
