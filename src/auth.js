@@ -12,14 +12,8 @@ const sha = s => crypto.createHash('sha256').update(String(s)).digest('hex')
 export async function ensureAdmin() {
   const n = (await q('select count(*)::int c from saas.admins')).rows[0].c
   if (n > 0) { await q('delete from saas.bootstrap').catch(() => {}); return }   // admin présent → plus d'amorçage
-  // Option héritée (déconseillée) : amorçage par variables d'environnement. À éviter : le mot de passe traîne en clair dans l'env.
-  const email = process.env.SAAS_ADMIN_EMAIL, pwd = process.env.SAAS_ADMIN_PASSWORD
-  if (email && pwd) {
-    await q('insert into saas.admins(email,password_hash,role) values ($1,$2,$3)', [email.toLowerCase(), bcrypt.hashSync(pwd, 12), 'owner'])
-    console.log('✓ Compte admin créé depuis l’environnement :', email, '— retirez maintenant SAAS_ADMIN_PASSWORD de l’environnement (le hachage est en base).')
-    return
-  }
-  // Amorçage sécurisé : un code à usage unique, affiché UNE fois dans les logs, stocké haché (jamais en clair).
+  // Aucun mot de passe en environnement : amorçage par code à usage unique uniquement,
+  // affiché UNE fois dans les logs, stocké haché (jamais en clair).
   const row = (await q('select token_hash from saas.bootstrap where id=1')).rows[0]
   if (!row?.token_hash) {
     const token = 'BOOT-' + crypto.randomBytes(18).toString('base64url')

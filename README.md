@@ -7,10 +7,12 @@ Node.js (Express) · PostgreSQL (Supabase en production, PGlite en local).
 ## Démarrage local
 ```bash
 npm install
-SAAS_ADMIN_EMAIL=vous@exemple.ht SAAS_ADMIN_PASSWORD=motdepasse npm start
+npm start
 # → http://localhost:4000   (PGlite local, aucune base à installer)
 ```
 Copiez `.env.example` → `.env` et remplissez les valeurs.
+
+**Premier administrateur** : aucun identifiant dans l'environnement. Au 1er démarrage sans admin, un **code à usage unique** (`BOOT-…`) s'affiche dans les logs ; créez le compte depuis la console (écran « Créer l'administrateur » : e-mail + mot de passe + code). Le mot de passe est haché (bcrypt) en base, jamais stocké en clair.
 
 ## Points clés
 - **Licences** : signées Ed25519. La clé privée se fournit via `LICENSE_PRIVATE_KEY` (jamais committée). Ne régénérez pas la paire (la clé publique est embarquée dans l'app).
