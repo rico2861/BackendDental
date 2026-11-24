@@ -50,4 +50,6 @@ export async function ensureSchema() {
   await i.exec("alter table saas.admins add column if not exists blocked boolean not null default false")
   // Amorçage sécurisé du 1er admin : code à usage unique haché, aucun mot de passe en environnement
   await i.exec("create table if not exists saas.bootstrap (id int primary key, token_hash text, created_at timestamptz default now())")
+  // Réglages divers (clé/valeur) — ex. coupe-sessions global « sessions_valid_after »
+  await i.exec("create table if not exists saas.kv (k text primary key, v text, updated_at timestamptz default now())")
 }

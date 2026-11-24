@@ -44,11 +44,33 @@ export async function bootstrapAdmin({ email, password, token } = {}) {
   return { ok: true, email: e }
 }
 
+// ─── Durées de session (expiration par inactivité + plafond absolu) ──────────
+const nowSec = () => Math.floor(Date.now() / 1000)
+const IDLE_ADMIN = () => (Number(process.env.ADMIN_IDLE_MIN) || 30) * 60          // 30 min d'inactivité
+const MAX_ADMIN = () => (Number(process.env.ADMIN_MAX_HOURS) || 12) * 3600        // plafond 12 h
+const IDLE_CLIENT = () => (Number(process.env.CLIENT_IDLE_MIN) || 120) * 60       // 2 h d'inactivité
+const MAX_CLIENT = () => (Number(process.env.CLIENT_MAX_DAYS) || 30) * 86400      // plafond 30 j
+
+// Coupe-sessions global : toute session émise avant cette date est rejetée (cache 30 s).
+let CUT = { v: 0, at: 0 }
+async function cutoff() {
+  if (Date.now() - CUT.at < 30000) return CUT.v
+  try { const r = await q("select v from saas.kv where k='sessions_valid_after'"); CUT = { v: Number(r.rows[0]?.v || 0), at: Date.now() } } catch { CUT.at = Date.now() }
+  return CUT.v
+}
+export async function revokeAllSessions() {
+  const t = String(nowSec())
+  await q("insert into saas.kv(k,v,updated_at) values ('sessions_valid_after',$1,now()) on conflict (k) do update set v=$1, updated_at=now()", [t])
+  CUT = { v: Number(t), at: Date.now() }
+  return { ok: true }
+}
+export function adminTokenFor(a) { return jwt.sign({ id: a.id, email: a.email, role: a.role, sat: nowSec(), jti: crypto.randomUUID() }, SECRET(), { expiresIn: IDLE_ADMIN() }) }
+
 export async function login(email, password) {
   const a = (await q('select * from saas.admins where email=$1', [String(email || '').toLowerCase()])).rows[0]
   if (!a || !bcrypt.compareSync(String(password || ''), a.password_hash)) throw Object.assign(new Error('E-mail ou mot de passe incorrect'), { status: 401 })
   if (a.blocked) throw Object.assign(new Error('Compte administrateur bloqué. Contactez un propriétaire.'), { status: 403 })
-  return jwt.sign({ id: a.id, email: a.email, role: a.role, jti: crypto.randomUUID() }, SECRET(), { expiresIn: '12h' })
+  return adminTokenFor(a)
 }
 
 // Réservé aux propriétaires (gestion des administrateurs).
@@ -60,29 +82,40 @@ export function requireOwner(req, res, next) {
 export function setCookie(res, token) {
   // Console hébergée sur un autre domaine que le backend → SameSite=None + Secure.
   const crossSite = process.env.SAAS_CROSS_SITE === 'true'
-  res.cookie(COOKIE, token, { httpOnly: true, sameSite: crossSite ? 'none' : 'lax', secure: crossSite || process.env.NODE_ENV === 'production', maxAge: 12 * 3600000 })
+  res.cookie(COOKIE, token, { httpOnly: true, sameSite: crossSite ? 'none' : 'lax', secure: crossSite || process.env.NODE_ENV === 'production', maxAge: IDLE_ADMIN() * 1000 })
 }
 export function clearCookie(res) { res.clearCookie(COOKIE) }
 
-export function requireAdmin(req, res, next) {
+export async function requireAdmin(req, res, next) {
   try {
     const h = req.headers.authorization || ''
     const bearer = h.startsWith('Bearer ') ? h.slice(7) : ''
-    req.admin = jwt.verify(bearer || req.cookies?.[COOKIE] || '', SECRET()); next()
+    const p = jwt.verify(bearer || req.cookies?.[COOKIE] || '', SECRET())
+    const now = nowSec()
+    if (p.sat && now - p.sat > MAX_ADMIN()) return res.status(401).json({ error: 'Session expirée, reconnectez-vous.', code: 'AUTH' })
+    if (p.iat && p.iat < await cutoff()) return res.status(401).json({ error: 'Session close, reconnectez-vous.', code: 'AUTH' })
+    req.admin = p
+    setCookie(res, jwt.sign({ id: p.id, email: p.email, role: p.role, sat: p.sat || now, jti: crypto.randomUUID() }, SECRET(), { expiresIn: IDLE_ADMIN() }))  // glissant
+    next()
   } catch { res.status(401).json({ error: 'Non connecté', code: 'AUTH' }) }
 }
 
 // ─── Espace CLIENT (vitrine) : jeton porteur (Bearer), stocké côté vitrine. ──
 // On évite les cookies cross-site : la vitrine envoie Authorization: Bearer <token>.
 export function clientToken(clinic) {
-  return jwt.sign({ cid: clinic.id, email: clinic.email, role: 'client', jti: crypto.randomUUID() }, SECRET(), { expiresIn: '30d' })
+  return jwt.sign({ cid: clinic.id, email: clinic.email, role: 'client', sat: nowSec(), jti: crypto.randomUUID() }, SECRET(), { expiresIn: IDLE_CLIENT() })
 }
-export function requireClient(req, res, next) {
+export async function requireClient(req, res, next) {
   try {
     const h = req.headers.authorization || ''
     const t = h.startsWith('Bearer ') ? h.slice(7) : ''
     const p = jwt.verify(t, SECRET())
     if (p.role !== 'client') throw new Error('bad role')
-    req.client = p; next()
+    const now = nowSec()
+    if (p.sat && now - p.sat > MAX_CLIENT()) return res.status(401).json({ error: 'Session expirée, reconnectez-vous.', code: 'AUTH' })
+    if (p.iat && p.iat < await cutoff()) return res.status(401).json({ error: 'Session close, reconnectez-vous.', code: 'AUTH' })
+    req.client = p
+    res.set('X-DL-Token', jwt.sign({ cid: p.cid, email: p.email, role: 'client', sat: p.sat || now, jti: crypto.randomUUID() }, SECRET(), { expiresIn: IDLE_CLIENT() }))  // glissant
+    next()
   } catch { res.status(401).json({ error: 'Session expirée, reconnectez-vous.', code: 'AUTH' }) }
 }

@@ -26,10 +26,12 @@ export function _setFetch(f) { fetchImpl = f }
 async function send(to, subject, html, as = 'client') {
   if (!env('RESEND_API_KEY')) { console.log(`[mail] (non configuré) → ${to} : ${subject}`); return { skipped: true } }
   if (!to) return { skipped: 'no_to' }
+  const payload = { from: FROM()[as], to, subject, html }
+  const rt = env('MAIL_REPLY_TO') || env('MAIL_SUPPORT'); if (rt) payload.reply_to = rt   // réponses → support
   const r = await fetchImpl('https://api.resend.com/emails', {
     method: 'POST',
     headers: { Authorization: `Bearer ${env('RESEND_API_KEY')}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify({ from: FROM()[as], to, subject, html })
+    body: JSON.stringify(payload)
   })
   if (!r.ok) { const t = await r.text().catch(() => ''); console.error('[mail] échec', r.status, t); return { ok: false, status: r.status } }
   return { ok: true }

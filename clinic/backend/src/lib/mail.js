@@ -6,14 +6,14 @@ import crypto from 'crypto'
 
 const b64 = s => Buffer.from(String(s), 'utf8').toString('base64')
 const hdr = s => /^[\x20-\x7e]*$/.test(s) ? s : `=?UTF-8?B?${b64(s)}?=`
-export function sendMail({ host, port = 587, user, pass, from, fromName, to, subject, text, html, timeout = 15000 }) {
+export function sendMail({ host, port = 587, user, pass, from, fromName, replyTo, to, subject, text, html, timeout = 15000 }) {
   return new Promise((resolve, reject) => {
     let sock = null, buf = '', step = 0, done = false, timer = null
     const fail = e => { if (done) return; done = true; clearTimeout(timer); try { sock?.destroy() } catch {} reject(e instanceof Error ? e : new Error(String(e))) }
     timer = setTimeout(() => fail(new Error('Serveur e-mail injoignable (pas de connexion Internet ?)')), timeout)
     const send = l => sock.write(l + '\r\n')
     const boundary = 'dl' + crypto.randomBytes(8).toString('hex'), dom = String(from).split('@')[1] || 'localhost'
-    const body = [`From: ${hdr(fromName || 'DENTAL')} <${from}>`, `To: <${to}>`, `Subject: ${hdr(subject)}`, `Date: ${new Date().toUTCString()}`, `Message-ID: <${crypto.randomUUID()}@${dom}>`, 'MIME-Version: 1.0', `Content-Type: multipart/alternative; boundary="${boundary}"`, '',
+    const body = [`From: ${hdr(fromName || 'DENTAL')} <${from}>`, `To: <${to}>`, ...(replyTo ? [`Reply-To: <${replyTo}>`] : []), `Subject: ${hdr(subject)}`, `Date: ${new Date().toUTCString()}`, `Message-ID: <${crypto.randomUUID()}@${dom}>`, 'MIME-Version: 1.0', `Content-Type: multipart/alternative; boundary="${boundary}"`, '',
       `--${boundary}`, 'Content-Type: text/plain; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(text).replace(/.{76}/g, '$&\r\n'), `--${boundary}`, 'Content-Type: text/html; charset=UTF-8', 'Content-Transfer-Encoding: base64', '', b64(html || text).replace(/.{76}/g, '$&\r\n'), `--${boundary}--`].join('\r\n').replace(/\r\n\./g, '\r\n..')
     const seq = [['EHLO dental-light', 250], ...(Number(port) === 587 ? [['STARTTLS', 220, 'tls'], ['EHLO dental-light', 250]] : []), ...(user ? [['AUTH LOGIN', 334], [b64(user), 334], [b64(pass), 235]] : []), [`MAIL FROM:<${from}>`, 250], [`RCPT TO:<${to}>`, 250], ['DATA', 354], [body + '\r\n.', 250], ['QUIT', 221]]
     const onLine = line => { const code = Number(line.slice(0, 3)); if (line[3] === '-') return   // réponse multiligne
@@ -40,26 +40,28 @@ async function post(url, body, headers = {}) {
   } finally { clearTimeout(t) }
 }
 
-export async function sendViaResend({ to, subject, text, html, fromName }) {
+export async function sendViaResend({ to, subject, text, html, fromName, replyTo }) {
   const addr = process.env.MAIL_FROM ? (process.env.MAIL_FROM.match(/<([^>]+)>/)?.[1] || process.env.MAIL_FROM.trim()) : 'onboarding@resend.dev'
   const base = process.env.MAIL_FROM && process.env.MAIL_FROM.includes('<') ? process.env.MAIL_FROM.replace(/<.*/, '').trim().replace(/^"|"$/g, '') : 'Dental Assist'
   const name = (fromName || base).replace(/[<>"\r\n]/g, '').trim() || 'Dental Assist'
   const from = `${name} <${addr}>`
-  await post('https://api.resend.com/emails', { from, to, subject, html: html || text, text }, { Authorization: `Bearer ${process.env.RESEND_API_KEY}` })
+  const payload = { from, to, subject, html: html || text, text }
+  const rt = replyTo || process.env.MAIL_REPLY_TO; if (rt) payload.reply_to = rt
+  await post('https://api.resend.com/emails', payload, { Authorization: `Bearer ${process.env.RESEND_API_KEY}` })
   return { ok: true }
 }
 
 // Relais : l'app demande au backend SaaS d'envoyer (la clé e-mail reste sur le serveur).
-export async function relayMail({ clinic_id, fingerprint, to, subject, text, html, fromName }) {
+export async function relayMail({ clinic_id, fingerprint, to, subject, text, html, fromName, replyTo }) {
   if (!SAAS_URL()) throw new Error('Relais e-mail indisponible (SAAS_URL non défini)')
-  await post(SAAS_URL() + '/api/relay-mail', { clinic_id, fingerprint, to, subject, text, html, fromName })
+  await post(SAAS_URL() + '/api/relay-mail', { clinic_id, fingerprint, to, subject, text, html, fromName, replyTo })
   return { ok: true }
 }
 
 // Choisit automatiquement : SMTP de la clinique → Resend local → relais SaaS.
-export async function deliver({ cfg, relay, to, subject, text, html, fromName }) {
-  if (cfg?.host) { try { return await sendMail({ ...cfg, fromName, to, subject, text, html }) } catch (e) { if (!resendReady() && !SAAS_URL()) throw e } }
-  if (resendReady()) return await sendViaResend({ to, subject, text, html, fromName })
-  if (relay && SAAS_URL()) return await relayMail({ ...relay, fromName, to, subject, text, html })
+export async function deliver({ cfg, relay, to, subject, text, html, fromName, replyTo }) {
+  if (cfg?.host) { try { return await sendMail({ ...cfg, fromName, replyTo, to, subject, text, html }) } catch (e) { if (!resendReady() && !SAAS_URL()) throw e } }
+  if (resendReady()) return await sendViaResend({ to, subject, text, html, fromName, replyTo })
+  if (relay && SAAS_URL()) return await relayMail({ ...relay, fromName, replyTo, to, subject, text, html })
   throw new Error("Aucun moyen d'envoi d'e-mail (SMTP de la clinique, Resend ou relais SaaS)")
 }

@@ -11,7 +11,7 @@ import helmet from 'helmet'
 import cookieParser from 'cookie-parser'
 import rateLimit from 'express-rate-limit'
 import { ensureSchema, dbKind, q } from './db.js'
-import { ensureAdmin, bootstrapAdmin, login, setCookie, clearCookie, requireAdmin, requireClient, requireOwner } from './auth.js'
+import { ensureAdmin, bootstrapAdmin, login, setCookie, clearCookie, requireAdmin, requireClient, requireOwner, revokeAllSessions, adminTokenFor } from './auth.js'
 import * as core from './core.js'
 
 const ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
@@ -137,6 +137,8 @@ admin.delete('/bank-accounts/:id', wrap(async (req, res) => res.json(await core.
 admin.get('/payments/:id/proof-url', wrap(async (req, res) => res.json(await core.proofUrl(req.params.id))))
 // Administrateurs (propriétaires uniquement)
 admin.get('/admins', requireOwner, wrap(async (req, res) => res.json(await core.listAdmins())))
+// Déconnecter TOUT LE MONDE (admins + espaces clients) — réservé au propriétaire ; l'auteur reste connecté.
+admin.post('/sessions/revoke-all', requireOwner, wrap(async (req, res) => { await revokeAllSessions(); setCookie(res, adminTokenFor(req.admin)); res.json({ ok: true }) }))
 admin.post('/admins', requireOwner, wrap(async (req, res) => res.json(await core.createAdmin(req.body || {}, req.admin.email))))
 admin.patch('/admins/:id/role', requireOwner, wrap(async (req, res) => res.json(await core.setAdminRole(req.params.id, req.body?.role, req.admin.email))))
 admin.post('/admins/:id/block', requireOwner, wrap(async (req, res) => res.json(await core.blockAdmin(req.params.id, req.body?.blocked !== false, req.admin.email, req.admin.id))))

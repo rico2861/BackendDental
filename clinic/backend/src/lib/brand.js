@@ -48,8 +48,9 @@ export async function sendBrandedMail(q, clinicId, { to, subject, heading, bodyH
   if (!cfg && !resendReady() && !process.env.SAAS_URL) return { skipped: true, reason: 'no_mailer' }
   const html = brandedEmail(brand, { heading, bodyHtml })
   const body = text || String(bodyHtml).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
+  const replyTo = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(brand.email || '') ? brand.email : undefined  // le patient répond À LA CLINIQUE
   try {
-    await deliver({ cfg, relay: { clinic_id: clinicId }, fromName: brand.name, to, subject, text: body, html })
+    await deliver({ cfg, relay: { clinic_id: clinicId }, fromName: brand.name, replyTo, to, subject, text: body, html })
     return { ok: true }
   } catch (e) { return { skipped: true, reason: e.message } }
 }
