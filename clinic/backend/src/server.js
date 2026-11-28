@@ -35,6 +35,9 @@ app.set('trust proxy', 1)
 app.use(helmet({ contentSecurityPolicy: { directives: { upgradeInsecureRequests: config.hosted ? [] : null } }, hsts: config.hosted ? { maxAge: 15552000, includeSubDomains: true } : false, crossOriginOpenerPolicy: false, originAgentCluster: false })); app.use(express.json({ limit: '100kb' })); app.use(cookieParser())
 // données privées : aucune réponse de l'API ne doit être gardée par un cache (CDN de l'hébergeur, proxy, navigateur)
 app.use('/api', (req, res, next) => { res.setHeader('Cache-Control', 'no-store, private'); res.setHeader('CDN-Cache-Control', 'no-store'); next() })
+// Liveness ultra-léger pour empêcher la mise en veille de l'hébergeur (Render) : AUCUNE base de données,
+// réponse instantanée, monté avant les filtres maintenance/licence pour ne jamais être bloqué.
+app.get('/api/ping', (req, res) => res.json({ ok: true, uptime: Math.round(process.uptime()), t: Date.now() }))
 // cache court des calculs lourds (tableaux de bord, statistiques, dettes, résumé du journal) :
 // réutilisé tant qu'aucune donnée n'a changé (toute écriture le vide) et au plus 60 s ; propre à chaque session (droits respectés)
 let dataVersion = 0; const RCACHE = new Map(), HEAVY = /^\/api\/(dashboard\/owner|finance\/stats|finance\/summary|audit\/summary|debts|me\/dashboard|me\/activity|intel(\/reception)?|queue)$/
