@@ -2,7 +2,7 @@
 // Les e-mails partent par l'expéditeur de la plateforme (Resend), mais portent le nom,
 // le logo et les coordonnées de la clinique concernée.
 import { mailCfg } from '../routes/security.js'
-import { deliver, resendReady } from './mail.js'
+import { deliver, resendReady, platformSmtp } from './mail.js'
 
 export const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 
@@ -45,7 +45,7 @@ export async function sendBrandedMail(q, clinicId, { to, subject, heading, bodyH
   if (!to || !/^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(String(to))) return { skipped: true, reason: 'no_email' }
   const brand = await clinicBrand(q, clinicId)
   const cfg = await mailCfg(q, clinicId).catch(() => null)   // SMTP propre à la clinique si configuré
-  if (!cfg && !resendReady() && !process.env.SAAS_URL) return { skipped: true, reason: 'no_mailer' }
+  if (!cfg && !platformSmtp() && !resendReady() && !process.env.SAAS_URL) return { skipped: true, reason: 'no_mailer' }
   const html = brandedEmail(brand, { heading, bodyHtml })
   const body = text || String(bodyHtml).replace(/<[^>]+>/g, ' ').replace(/\s+/g, ' ').trim()
   const replyTo = /^[^@\s]+@[^@\s]+\.[^@\s]+$/.test(brand.email || '') ? brand.email : undefined  // le patient répond À LA CLINIQUE

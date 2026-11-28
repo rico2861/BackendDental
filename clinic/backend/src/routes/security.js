@@ -12,7 +12,7 @@ const dec = s => { const b = Buffer.from(s, 'base64'), d = crypto.createDecipher
 export const QUIET = ['user_role', '2fa_enabled', 'rate_changed']
 export const notify = (q, clinic, kind, title, text, perm = 'view_audit_logs', userId = null) => QUIET.includes(kind) ? Promise.resolve() : q('insert into notifications(clinic_id,user_id,perm,kind,title,text) values($1,$2,$3,$4,$5,$6)', [clinic, userId, perm, kind, title, text]).catch(() => {})
 // ── codes à usage unique : envoyés par e-mail, ou délivrés par la direction (fonctionnent sans Internet) ──
-import { sendMail, deliver, resendReady } from '../lib/mail.js'
+import { sendMail, deliver, resendReady, platformSmtp } from '../lib/mail.js'
 import { clinicBrand, brandedEmail, esc } from '../lib/brand.js'
 import { status as licenseStatus, fingerprint as hostFingerprint } from '../lib/license.js'
 export const maskEmail = e => String(e || '').replace(/^(.{1,2})[^@]*(@.*)$/, (m, a, b) => a + '•••' + b)
@@ -21,7 +21,7 @@ const newCode = async (q, userId, kind, minutes, digits = 6, by = null) => { con
   await q("update login_codes set used_at=now() where user_id=$1 and kind=$2 and used_at is null", [userId, kind])
   await q('insert into login_codes(user_id,kind,code_hash,expires_at,created_by) values($1,$2,$3,now()+make_interval(mins=>$4),$5)', [userId, kind, sha(userId + ':' + code), minutes, by]); return code }
 export async function sendEmailCode(q, u, kind = 'email') {
-  const cfg = await mailCfg(q, u.clinic_id); if (!cfg && !resendReady() && !process.env.SAAS_URL) return { sent: false, reason: "Aucun serveur d'e-mail n'est configuré par la clinique" }
+  const cfg = await mailCfg(q, u.clinic_id); if (!cfg && !platformSmtp() && !resendReady() && !process.env.SAAS_URL) return { sent: false, reason: "Aucun serveur d'e-mail n'est configuré" }
   const last = (await q("select created_at from login_codes where user_id=$1 and kind=$2 order by created_at desc limit 1", [u.id, kind])).rows[0]; if (last && Date.now() - new Date(last.created_at) < 30e3) return { sent: true, recent: true, to: maskEmail(u.email), wait: true }
   const code = await newCode(q, u.id, kind, 10)
   let relay = null; try { const ls = licenseStatus(); relay = { clinic_id: ls.clinic_id, fingerprint: hostFingerprint() } } catch {}

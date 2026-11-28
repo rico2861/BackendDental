@@ -30,6 +30,15 @@ export function sendMail({ host, port = 587, user, pass, from, fromName, replyTo
 // ── Secours sans configuration : Resend (HTTPS, port 443) ou relais via le backend SaaS ──
 const SAAS_URL = () => (process.env.SAAS_URL || '').replace(/\/+$/, '')
 export const resendReady = () => !!process.env.RESEND_API_KEY
+// SMTP de la plateforme (env) : expéditeur unique pour toute l'application (ex. Hostinger)
+export const platformSmtp = () => {
+  const host = process.env.SMTP_HOST; if (!host) return null
+  const user = process.env.SMTP_USER || '', pass = process.env.SMTP_PASS || ''
+  if (!user || !pass) return null
+  const from = (process.env.MAIL_FROM && (process.env.MAIL_FROM.match(/<([^>]+)>/)?.[1] || process.env.MAIL_FROM.trim())) || user
+  return { host, port: Number(process.env.SMTP_PORT) || 465, user, pass, from }
+}
+const smtpReady = () => !!platformSmtp()
 
 async function post(url, body, headers = {}) {
   const ctrl = new AbortController(); const t = setTimeout(() => ctrl.abort(), 15000)
@@ -60,7 +69,10 @@ export async function relayMail({ clinic_id, fingerprint, to, subject, text, htm
 
 // Choisit automatiquement : SMTP de la clinique → Resend local → relais SaaS.
 export async function deliver({ cfg, relay, to, subject, text, html, fromName, replyTo }) {
-  if (cfg?.host) { try { return await sendMail({ ...cfg, fromName, replyTo, to, subject, text, html }) } catch (e) { if (!resendReady() && !SAAS_URL()) throw e } }
+  if (cfg?.host) { try { return await sendMail({ ...cfg, fromName, replyTo, to, subject, text, html }) } catch (e) { if (!smtpReady() && !resendReady() && !SAAS_URL()) throw e } }
+  // SMTP plateforme (Hostinger…) : prioritaire s'il est configuré — fiable même si la clé Resend est absente/invalide
+  const ps = platformSmtp()
+  if (ps) { try { return await sendMail({ ...ps, fromName, replyTo, to, subject, text, html }) } catch (e) { if (!resendReady() && !SAAS_URL()) throw e } }
   if (resendReady()) return await sendViaResend({ to, subject, text, html, fromName, replyTo })
   if (relay && SAAS_URL()) return await relayMail({ ...relay, fromName, replyTo, to, subject, text, html })
   throw new Error("Aucun moyen d'envoi d'e-mail (SMTP de la clinique, Resend ou relais SaaS)")

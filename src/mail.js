@@ -6,6 +6,7 @@
 //  Templates personnalisés par scénario, mise en page responsive.
 // ═══════════════════════════════════════════════════════════════════════════
 
+import { sendMail as smtpSend, platformSmtp } from '../clinic/backend/src/lib/mail.js'
 const B = { name: 'Dental Assist', teal: '#0ea5a4', dark: '#0d1b2a', text: '#374151', muted: '#6b7280', border: '#e5e7eb', coral: '#ff5d4d' }
 const esc = s => String(s ?? '').replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c]))
 const env = k => process.env[k]
@@ -24,17 +25,21 @@ export function _setFetch(f) { fetchImpl = f }
 
 // ── Envoi bas niveau ─────────────────────────────────────────────────────────
 async function send(to, subject, html, as = 'client') {
-  if (!env('RESEND_API_KEY')) { console.log(`[mail] (non configuré) → ${to} : ${subject}`); return { skipped: true } }
   if (!to) return { skipped: 'no_to' }
-  const payload = { from: FROM()[as], to, subject, html }
-  const rt = env('MAIL_REPLY_TO') || env('MAIL_SUPPORT'); if (rt) payload.reply_to = rt   // réponses → support
-  const r = await fetchImpl('https://api.resend.com/emails', {
-    method: 'POST',
-    headers: { Authorization: `Bearer ${env('RESEND_API_KEY')}`, 'Content-Type': 'application/json' },
-    body: JSON.stringify(payload)
-  })
-  if (!r.ok) { const t = await r.text().catch(() => ''); console.error('[mail] échec', r.status, t); return { ok: false, status: r.status } }
-  return { ok: true }
+  const rt = env('MAIL_REPLY_TO') || env('MAIL_SUPPORT')
+  // 1) Resend si une clé est présente
+  if (env('RESEND_API_KEY')) {
+    try {
+      const payload = { from: FROM()[as], to, subject, html }; if (rt) payload.reply_to = rt
+      const r = await fetchImpl('https://api.resend.com/emails', { method: 'POST', headers: { Authorization: `Bearer ${env('RESEND_API_KEY')}`, 'Content-Type': 'application/json' }, body: JSON.stringify(payload) })
+      if (r.ok) return { ok: true }
+      const t = await r.text().catch(() => ''); console.error('[mail] Resend échec', r.status, t)   // on tente le SMTP ensuite
+    } catch (e) { console.error('[mail] Resend erreur', e.message) }
+  }
+  // 2) SMTP plateforme (Hostinger…) — fiable même si Resend est absent/invalide
+  const ps = platformSmtp()
+  if (ps) { try { await smtpSend({ ...ps, fromName: 'Dental Assist', replyTo: rt, to, subject, html }); return { ok: true } } catch (e) { console.error('[mail] SMTP échec', e.message); return { ok: false } } }
+  console.log(`[mail] (non configuré) → ${to} : ${subject}`); return { skipped: true }
 }
 
 // ── Composants de mise en page ───────────────────────────────────────────────
