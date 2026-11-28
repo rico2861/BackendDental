@@ -139,6 +139,8 @@ admin.get('/payments/:id/proof-url', wrap(async (req, res) => res.json(await cor
 admin.get('/admins', requireOwner, wrap(async (req, res) => res.json(await core.listAdmins())))
 // Déconnecter TOUT LE MONDE (admins + espaces clients) — réservé au propriétaire ; l'auteur reste connecté.
 admin.post('/sessions/revoke-all', requireOwner, wrap(async (req, res) => { await revokeAllSessions(); setCookie(res, adminTokenFor(req.admin)); res.json({ ok: true }) }))
+admin.get('/prices', wrap(async (req, res) => res.json(core.prices())))
+admin.put('/prices', requireOwner, wrap(async (req, res) => res.json(await core.setPrices(req.body || {}))))
 admin.post('/admins', requireOwner, wrap(async (req, res) => res.json(await core.createAdmin(req.body || {}, req.admin.email))))
 admin.patch('/admins/:id/role', requireOwner, wrap(async (req, res) => res.json(await core.setAdminRole(req.params.id, req.body?.role, req.admin.email))))
 admin.post('/admins/:id/block', requireOwner, wrap(async (req, res) => res.json(await core.blockAdmin(req.params.id, req.body?.blocked !== false, req.admin.email, req.admin.id))))
@@ -164,6 +166,7 @@ if (fs.existsSync(path.join(WEB, 'index.html'))) {
 export async function init() {
   await ensureSchema()
   await ensureAdmin()
+  await core.loadPrices()
   console.log('Base de la console :', await dbKind())
   // Entretien quotidien : rappels d'expiration, blocages, rétention 90 j
   const maint = () => core.runMaintenance().then(r => r.reminded + r.blocked && console.log('Entretien :', r)).catch(e => console.error('Entretien :', e.message))

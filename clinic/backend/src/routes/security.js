@@ -55,7 +55,7 @@ export default function (app, { q, pool, need, auth, audit, fail, wrap, clean })
     await audit(req, '2FA_ENABLED', 'users', u.id); await notify(q, u.clinic_id, '2fa_enabled', 'Double authentification activée', u.email); res.json({ recovery_codes: codes }) }))
   app.post('/api/2fa/disable', auth, wrap(async (req, res) => {
     const u = req.user; if (!u.totp_enabled) return fail(res, 409, 'Non activée'); if (adminish(u) && u.req2fa && !u.mfa_email) return fail(res, 409, 'La double authentification est imposée par la clinique pour votre rôle')
-    if (!(await bcrypt.compare(req.body.password || '', u.password_hash)) || !(await verifySecondFactor(q, u, req.body.code))) return fail(res, 401, 'Mot de passe ou code invalide')
+    if (!(await bcrypt.compare(req.body.password || '', u.password_hash))) return fail(res, 401, 'Mot de passe incorrect')
     await q('update users set totp_enabled=false, totp_secret_enc=null, totp_pending_enc=null where id=$1', [u.id]); await q('delete from recovery_codes where user_id=$1', [u.id])
     await audit(req, '2FA_DISABLED', 'users', u.id); await notify(q, u.clinic_id, '2fa_disabled', 'Double authentification désactivée', u.email); res.json({ ok: true }) }))
   app.post('/api/users/:id/reset-2fa', need('manage_users'), wrap(async (req, res) => {   // appareil perdu : réservé au propriétaire

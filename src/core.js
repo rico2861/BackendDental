@@ -21,13 +21,19 @@ const safe = p => { try { return Promise.resolve(p).catch(e => console.error('[m
 let MC = moncash
 export function _setMoncash(m) { MC = m }
 
-// Prix des formules (HTG), surchargeables par env
+// Prix des formules (HTG) — configurables depuis la console (table saas.kv), repli env/défaut.
+let PRICE_CACHE = null
+export async function loadPrices() { try { const r = await q("select v from saas.kv where k='prices'"); PRICE_CACHE = r.rows[0]?.v ? JSON.parse(r.rows[0].v) : null } catch { PRICE_CACHE = null } }
 export function prices() {
-  return {
-    currency: process.env.PRICE_CURRENCY || 'HTG',
-    '1m': parseInt(process.env.PRICE_1M) || 1500,
-    '1y': parseInt(process.env.PRICE_1Y) || 15000
-  }
+  const c = PRICE_CACHE || {}
+  const m = Number(c['1m']) || parseInt(process.env.PRICE_1M) || 1500
+  const y = Number(c['1y']) || parseInt(process.env.PRICE_1Y) || 15000
+  return { currency: c.currency || process.env.PRICE_CURRENCY || 'HTG', '1m': m, '1y': y, PRICE_1M: m, PRICE_1Y: y }
+}
+export async function setPrices({ m, y, currency } = {}) {
+  const v = { '1m': Math.max(0, Math.round(Number(m)) || 0) || 1500, '1y': Math.max(0, Math.round(Number(y)) || 0) || 15000, currency: (currency || 'HTG').slice(0, 8) }
+  await q("insert into saas.kv(k,v,updated_at) values('prices',$1,now()) on conflict(k) do update set v=$1,updated_at=now()", [JSON.stringify(v)])
+  PRICE_CACHE = v; return prices()
 }
 
 const DAY = 86400000
