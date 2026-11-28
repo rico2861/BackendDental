@@ -228,7 +228,7 @@ const ownerFromLicense = async input => {
 }
 app.post('/api/login/owner/request', loginLimiter, wrap(async (req, res) => {
   const r = await ownerFromLicense((req.body || {}).license); if (r.err) return fail(res, r.err[0], r.err[1], r.err[2])
-  const sent = await sendEmailCode(q, r.owner, 'owner'); if (!sent.sent) return fail(res, sent.wait ? 429 : 503, sent.reason)
+  const sent = await sendEmailCode(q, r.owner, 'owner'); if (!sent.sent) return fail(res, sent.wait ? 429 : 503, sent.wait ? sent.reason : "Envoi du code impossible pour le moment. Connectez-vous plutôt avec votre e-mail et votre mot de passe via l'onglet « Personnel ».")
   res.json({ sent: true, email: sent.to || maskEmail(r.owner.email), recent: !!sent.recent,
     challenge: jwt.sign({ id: r.owner.id, tv: r.owner.token_version, cid: r.cid, p: 'ownerotp' }, SECRET, { expiresIn: '10m' }) }) }))
 app.post('/api/login/owner/verify', loginLimiter, wrap(async (req, res) => {
