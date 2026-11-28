@@ -6,7 +6,7 @@ import { pool, q, actorCtx } from './db/pool.js'
 import { payPlan } from './lib/billing-core.js'
 import { migrate, ensureOwner, provisionClinic } from './db/migrate.js'
 import { sendBrandedMail, esc } from './lib/brand.js'
-import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import { startScheduler } from './lib/backup.js'; import { startAlerts, runAlerts } from './lib/alerts.js'
+import dossier from './routes/dossier.js'; import tariffs from './routes/tariffs.js'; import backups from './routes/backups.js'; import backupsHosted from './routes/backups-hosted.js'; import { startScheduler } from './lib/backup.js'; import { startAlerts, runAlerts } from './lib/alerts.js'
 import { ALL, SENSITIVE, ROLES, makePermissions, assignedSql } from './core/permissions.js'
 import billing from './routes/billing.js'; import clinical from './routes/clinical.js'; import stock from './routes/stock.js'; import cash from './routes/cash.js'
 import planning from './routes/planning.js'; import intel from './routes/intel.js'; import { startIntel } from './lib/intel.js'; import { startCloud } from './lib/cloud.js'; import { ensureLogTriggers, startPlus, maintenance } from './lib/backup-plus.js'; import reports from './routes/reports.js'; import queue from './routes/queue.js'; import documents from './routes/documents.js'
@@ -415,7 +415,7 @@ app.get('/api/audit', need('view_audit_logs'), wrap(async (req, res) => res.json
     and ($8::text is null or a.action ilike '%'||$8||'%' or a.details::text ilike '%'||$8||'%' or concat(u.first_name,' ',u.last_name) ilike '%'||$8||'%') order by a.id desc limit $3`, [req.user.clinic_id, /^\d+$/.test(req.query.before || '') ? req.query.before : null, Math.min(200, Math.max(1, parseInt(req.query.limit) || 100)),
     /^[0-9a-f-]{36}$/.test(req.query.user || '') ? req.query.user : null, /^[A-Z_%,]+$/.test(req.query.actions || '') ? req.query.actions : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.from || '') ? req.query.from : null, /^\d{4}-\d{2}-\d{2}$/.test(req.query.to || '') ? req.query.to : null, clean(req.query.q, 60) || null])).rows)))
 
-const D = { pool, q, need, auth, audit, fail, wrap, clean }; recovery(app, { ...D, pwProblem }); billing(app, D); tariffs(app, D); backups(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); queue(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
+const D = { pool, q, need, auth, audit, fail, wrap, clean }; recovery(app, { ...D, pwProblem }); billing(app, D); tariffs(app, D); backups(app, D); backupsHosted(app, D); clinical(app, D); stock(app, D); cash(app, D); planning(app, D); queue(app, D); intel(app, D); reports(app, D); documents(app, D); security(app, D); clinical2(app, D); requests(app, D); dossier(app, D)
 app.post('/api/alerts/run', need('view_audit_logs'), wrap(async (req, res) => { await runAlerts(); res.json({ ok: true }) }))   // recalcul immédiat des notifications
 // adresses du réseau local : les autres ordinateurs, tablettes et téléphones connectés au même Wi-Fi / réseau ouvrent l'une d'elles
 // adresses utiles seulement : cartes virtuelles (VirtualBox, VMware, Hyper-V, WSL, Docker, Bluetooth) écartées, Wi-Fi en premier
