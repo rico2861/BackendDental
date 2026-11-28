@@ -177,8 +177,7 @@ const clean = (v, n = 200) => (typeof v === 'string' && v.trim() ? v.trim().slic
 const hist = (req, u, email, ok, reason) => q('insert into login_history(clinic_id,user_id,email,success,reason,ip,user_agent) values($1,$2,$3,$4,$5,$6,$7)', [u?.clinic_id ?? null, u?.id ?? null, email, ok, reason, req.ip, (req.headers['user-agent'] || '').slice(0, 200)])
 const failLogin = async u => { const { rows: [r] } = await q("update users set failed_attempts=failed_attempts+1, locked_until=case when failed_attempts>=4 then now()+interval '15 minutes' end where id=$1 returning locked_until", [u.id]); if (r.locked_until && r.locked_until > new Date()) await notify(u.clinic_id, 'account_locked', 'Compte verrouillé', `${u.email} verrouillé 15 min après 5 échecs`) }
 const finishLogin = async (req, res, u) => {
-  if (adminish(u) && (await q('select 1 from login_history where user_id=$1 and success limit 1', [u.id])).rowCount && !(await q("select 1 from login_history where user_id=$1 and success and ip=$2 and created_at>now()-interval '60 days' limit 1", [u.id, req.ip])).rowCount)
-    await notify(u.clinic_id, 'new_ip', 'Connexion depuis une nouvelle adresse', `${u.email} depuis ${req.ip}`)
+  // Les connexions sont conservées dans l'historique (login_history) + journal d'audit — pas de notification à chaque connexion.
   await q('update users set failed_attempts=0, locked_until=null, last_login_at=now() where id=$1', [u.id]); await newSession(req, res, u); req.user = u
   await hist(req, u, u.email, true, 'ok'); await audit(req, 'LOGIN', 'users', u.id); res.json({ ok: true }) }
 app.get('/api/health', wrap(async (req, res) => { await q('select 1'); res.json({ status: 'ok', uptime: Math.round(process.uptime()) }) }))
