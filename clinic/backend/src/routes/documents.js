@@ -48,7 +48,7 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
     res.json((await q("select c.id,c.kind,c.signer_name,c.signed_at,c.integrity_hash,u.first_name||' '||u.last_name collected_by from patient_consents c join users u on u.id=c.collected_by where c.patient_id=$1 order by c.signed_at desc", [p.id])).rows) }))
   app.get('/api/consents/:id/pdf', need('view_medical_records'), wrap(async (req, res) => {
     const c = UUID.test(req.params.id) ? (await q('select c.*,u.first_name||\' \'||u.last_name collector,p.last_name||\' \'||p.first_name patient,p.file_number from patient_consents c join users u on u.id=c.collected_by join patients p on p.id=c.patient_id where c.id=$1 and c.clinic_id=$2', [req.params.id, req.user.clinic_id])).rows[0] : null
-    if (!c || !(await access(req, c.patient_id))) return fail(res, 404, 'Introuvable'); const cl = (await q('select name,address,phone from clinics where id=$1', [req.user.clinic_id])).rows[0]
+    if (!c || !(await access(req, c.patient_id))) return fail(res, 404, 'Introuvable'); const cl = (await q('select name,address,phone,logo from clinics where id=$1', [req.user.clinic_id])).rows[0]
     const T = { treatment_consent: 'CONSENTEMENT À UN TRAITEMENT', prosthesis_quote: 'ACCEPTATION DE DEVIS DE PROTHÈSE', treatment_plan: 'APPROBATION DU PLAN DE TRAITEMENT', intervention_authorization: "AUTORISATION D'INTERVENTION" }
     await audit(req, 'CONSENT_PDF', 'patient_consents', c.id)
     pipe(res, 'consentement-' + c.file_number, d => { d.fontSize(18).fillColor('#1d6fd8').text(cl.name).fontSize(9).fillColor('#444').text(`${cl.address || ''} · ${cl.phone || ''}`).moveDown()

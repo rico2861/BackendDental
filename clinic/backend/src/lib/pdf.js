@@ -52,10 +52,13 @@ export const receiptThermalPdf = (doc, { clinic, pay, inv, patient, paid }) => {
 }
 
 // ── Éléments de mise en page ──
+// Décode un logo data URL (PNG/JPEG) en Buffer pour PDFKit (WEBP/SVG non supportés → repli lettre).
+const logoImage = logo => { if (!logo || typeof logo !== 'string') return null; const m = logo.match(/^data:image\/(png|jpe?g);base64,(.+)$/i); if (!m) return null; try { return Buffer.from(m[2], 'base64') } catch { return null } }
+const avatarBox = (doc, cl) => { doc.roundedRect(L, 34, 40, 40, 10).fill(C.brand); doc.font('Helvetica-Bold').fontSize(19).fillColor('#fff').text(sp(cl?.name || 'C').trim()[0].toUpperCase(), L, 45, { width: 40, align: 'center' }) }
 const header = (doc, cl, title, meta) => {
   doc.rect(0, 0, doc.page.width, 6).fill(C.brand)
-  doc.roundedRect(L, 34, 40, 40, 10).fill(C.brand)
-  doc.font('Helvetica-Bold').fontSize(19).fillColor('#fff').text(sp(cl?.name || 'C').trim()[0].toUpperCase(), L, 45, { width: 40, align: 'center' })
+  const buf = logoImage(cl?.logo)
+  if (buf) { try { doc.image(buf, L, 32, { fit: [44, 44] }) } catch { avatarBox(doc, cl) } } else avatarBox(doc, cl)
   doc.font('Helvetica-Bold').fontSize(15).fillColor(C.dark).text(sp(cl?.name), L + 52, 35, { width: 230 })
   const info = [cl?.address, cl?.phone && 'Tél. ' + cl.phone].filter(Boolean).map(sp).join('\n')
   if (info) doc.font('Helvetica').fontSize(8.5).fillColor(C.muted).text(info, L + 52, doc.y + 2, { width: 230, lineGap: 1 })

@@ -4,6 +4,7 @@ const TYPES = ['Couronne','Implant','Bridge / Pont','Prothèse partielle amovibl
 const PLAN_NEXT = { draft: ['pending', 'cancelled'], pending: ['approved', 'draft', 'cancelled'], approved: ['in_progress', 'suspended', 'cancelled'], in_progress: ['suspended', 'done', 'cancelled'], suspended: ['in_progress', 'cancelled'], done: [], cancelled: [] }
 import { clinicCfg, doctorWindows, localWeekday, localMin, fmtHm } from '../lib/intel.js'
 import { billService, validAmounts, COMMISSION_SQL, withCommission, actingDoctor, lockedDoctor, payProblem, syncTeeth, payPlan } from '../lib/billing-core.js'
+import { sendBrandedMail, esc } from '../lib/brand.js'
 const FDI = n => Number.isInteger(n) && n >= 11 && n <= 48 && n % 10 >= 1 && n % 10 <= 8 && Math.floor(n / 10) <= 4
 export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   const tx = async fn => { const c = await pool.connect(); try { await c.query('begin'); const r = await fn(c); await c.query('commit'); return r } catch (e) { await c.query('rollback'); throw e } finally { c.release() } }
@@ -20,6 +21,22 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const d = s => /^\d{4}-\d{2}-\d{2}$/.test(s || '') ? s : null, from = d(req.query.from) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' }), to = d(req.query.to) || from
     res.json((await q(`select a.id,a.starts_at,a.duration_min,a.reason,a.chair,a.status,a.doctor_id,a.arrived_at,a.seated_at,a.finished_at,p.id patient_id,p.file_number,p.last_name||' '||p.first_name patient,u.first_name||' '||u.last_name doctor
       from appointments a join patients p on p.id=a.patient_id join users u on u.id=a.doctor_id where a.clinic_id=$1 and a.starts_at >= ($2::date::timestamp at time zone 'America/Port-au-Prince') and a.starts_at < (($3::date+1)::timestamp at time zone 'America/Port-au-Prince') order by a.starts_at`, [req.user.clinic_id, from, to])).rows) }))
+  // Rappel de rendez-vous par e-mail au patient (personnalisé au nom de la clinique)
+  app.post('/api/appointments/:id/remind', need(...A), wrap(async (req, res) => {
+    const a = (await q(`select a.id,a.starts_at,a.reason,p.email,p.first_name,u.first_name||' '||u.last_name doctor
+      from appointments a join patients p on p.id=a.patient_id join users u on u.id=a.doctor_id
+      where a.id=$1 and a.clinic_id=$2`, [req.params.id, req.user.clinic_id])).rows[0]
+    if (!a) return fail(res, 404, 'Rendez-vous introuvable')
+    if (!a.email) return fail(res, 400, "Ce patient n'a pas d'adresse e-mail. Ajoutez-la dans sa fiche pour lui envoyer un rappel.")
+    const when = new Date(a.starts_at).toLocaleString('fr-FR', { weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit', timeZone: 'America/Port-au-Prince' })
+    const r = await sendBrandedMail(q, req.user.clinic_id, { to: a.email, subject: 'Rappel de votre rendez-vous', heading: 'Rappel de rendez-vous',
+      bodyHtml: `<p>Bonjour ${esc(a.first_name)},</p><p>Nous vous rappelons votre rendez-vous :</p>
+        <p style="font-size:16px;margin:12px 0"><b>${esc(when)}</b>${a.reason ? `<br>Motif : ${esc(a.reason)}` : ''}<br>Avec : ${esc(a.doctor)}</p>
+        <p>En cas d'empêchement, merci de nous prévenir à l'avance pour reprogrammer. À bientôt !</p>` })
+    if (r.skipped) return fail(res, r.reason === 'no_mailer' ? 503 : 400, r.reason === 'no_mailer' ? "Service e-mail non configuré (clé Resend manquante ou invalide)." : 'Envoi impossible pour le moment.')
+    await audit(req, 'APPT_REMINDER', 'appointments', a.id, { to: a.email })
+    res.json({ ok: true, to: a.email })
+  }))
   app.post('/api/appointments', need(...A), wrap(async (req, res) => {
     const b = req.body; if (lockedDoctor(req)) b.doctor_id = req.user.id; const dur = parseInt(b.duration_min) || 30, t = Date.parse(b.starts_at); if (isNaN(t) || dur < 5 || dur > 480) return fail(res, 400, 'Date ou durée invalide')
     // heures de service du médecin : vérifiées AVANT la transaction (la base embarquée n'a qu'une connexion)
