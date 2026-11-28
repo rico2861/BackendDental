@@ -27,6 +27,7 @@ export const receiptThermalPdf = (doc, { clinic, pay, inv, patient, paid }) => {
   ctr(clinic?.name || 'Clinique', 'Helvetica-Bold', 11)
   if (clinic?.address) ctr(clinic.address, 'Helvetica', 7, '#555')
   if (clinic?.phone) ctr('Tél. ' + clinic.phone, 'Helvetica', 7, '#555')
+  if (clinic?.email) ctr(clinic.email, 'Helvetica', 7, '#555')
   doc.moveDown(.25)
   ctr(voided ? 'REÇU — ANNULÉ' : 'REÇU DE PAIEMENT', 'Helvetica-Bold', 9, voided ? C.err : C.brand)
   div()
@@ -60,7 +61,7 @@ const header = (doc, cl, title, meta) => {
   const buf = logoImage(cl?.logo)
   if (buf) { try { doc.image(buf, L, 32, { fit: [44, 44] }) } catch { avatarBox(doc, cl) } } else avatarBox(doc, cl)
   doc.font('Helvetica-Bold').fontSize(15).fillColor(C.dark).text(sp(cl?.name), L + 52, 35, { width: 230 })
-  const info = [cl?.address, cl?.phone && 'Tél. ' + cl.phone].filter(Boolean).map(sp).join('\n')
+  const info = [cl?.address, [cl?.phone && 'Tél. ' + cl.phone, cl?.email].filter(Boolean).join('  ·  ')].filter(Boolean).map(sp).join('\n')
   if (info) doc.font('Helvetica').fontSize(8.5).fillColor(C.muted).text(info, L + 52, doc.y + 2, { width: 230, lineGap: 1 })
   const leftEnd = doc.y
   doc.font('Helvetica-Bold').fontSize(21).fillColor(C.brand).text(title, 300, 32, { width: R - 300, align: 'right', characterSpacing: .5 })

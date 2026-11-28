@@ -5,7 +5,7 @@ const NUM = /^\d{1,10}(\.\d{1,4})?$/, c100 = v => Math.round(Number(v) * 100)
 export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   const tx = async fn => { const c = await pool.connect(); try { await c.query('begin'); const r = await fn(c); await c.query('commit'); return r } catch (e) { await c.query('rollback'); throw e } finally { c.release() } }
   const rateNow = async (c, cid) => (await c.query('select rate::text from exchange_rates where clinic_id=$1 and effective_at<=now() order by effective_at desc, created_at desc limit 1', [cid])).rows[0]?.rate ?? null
-  const clinic = async cid => (await q('select name,address,phone,logo from clinics where id=$1', [cid])).rows[0]
+  const clinic = async cid => (await q('select name,address,phone,logo,email from clinics where id=$1', [cid])).rows[0]
   const E = (s, m) => ({ err: [s, m] })
 
   // factures sans médecin responsable : commission attribuée à personne (à corriger)

@@ -79,7 +79,7 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
     const name = `${req.params.type}-${from}_${to}`, head = r.noRange ? r.title : `${r.title} — du ${from} au ${to}`
     if (fmt === 'json') return res.json({ title: head, cols: r.cols, rows: rows.slice(0, 500), total: rows.length })
     await audit(req, 'REPORT_EXPORTED', 'reports', req.params.type, { format: fmt, from, to })
-    const clinic = (await q('select name,address,phone,logo from clinics where id=$1', [req.user.clinic_id])).rows[0] || {}, by = `${req.user.first_name} ${req.user.last_name}`, ctx = { clinic, title: r.title, period: r.noRange ? `Situation au ${new Date().toLocaleDateString('fr-FR')}` : `Période : du ${from.split('-').reverse().join('/')} au ${to.split('-').reverse().join('/')}`, cols: r.cols, rows, by, safe }
+    const clinic = (await q('select name,address,phone,logo,email from clinics where id=$1', [req.user.clinic_id])).rows[0] || {}, by = `${req.user.first_name} ${req.user.last_name}`, ctx = { clinic, title: r.title, period: r.noRange ? `Situation au ${new Date().toLocaleDateString('fr-FR')}` : `Période : du ${from.split('-').reverse().join('/')} au ${to.split('-').reverse().join('/')}`, cols: r.cols, rows, by, safe }
     if (fmt === 'csv') { res.type('text/csv; charset=utf-8').set('Content-Disposition', `attachment; filename="${name}.csv"`); return res.send(csv(r.cols, rows)) }
     if (fmt === 'xlsx') { const buf = await exporter.xlsx(ctx); res.type('application/vnd.openxmlformats-officedocument.spreadsheetml.sheet').set('Content-Disposition', `attachment; filename="${name}.xlsx"`); return res.send(buf) }
     if (fmt === 'pdf') return exporter.pdf(res, name, ctx)

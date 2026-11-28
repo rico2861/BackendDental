@@ -37,7 +37,7 @@ export default function (app, { q, need, audit, fail, wrap, clean }) {
   app.post('/api/patients/:id/restore', need('edit_patients'), wrap(async (req, res) => {
     if (!isAdmin(req.user)) return fail(res, 403, 'Réservé aux administrateurs'); const p = await access(req, req.params.id); if (!p) return fail(res, 404, 'Accès refusé')
     await q("update patients set status='active', deleted_at=null, deleted_by=null, delete_reason=null where id=$1", [p.id]); await audit(req, 'PATIENT_RESTORED', 'patients', p.id); res.json({ ok: true }) }))
-  const clinic = async req => (await q('select name,address,phone,logo from clinics where id=$1', [req.user.clinic_id])).rows[0] || {}
+  const clinic = async req => (await q('select name,address,phone,logo,email from clinics where id=$1', [req.user.clinic_id])).rows[0] || {}
   // fiche diagnostique (même présentation que la fiche papier) : remplie pour un patient, ou vierge à imprimer
   app.get('/api/fiche-diagnostique-vierge', need('view_medical_records', 'create_patients'), wrap(async (req, res) => {
     const cl = await clinic(req); makePdf(res, 'fiche-diagnostique-vierge', doc => diagnosticPdf(doc, { clinic: cl }), { footer: (cl.name || 'DENTAL') + '  ·  Fiche diagnostique' }) }))
