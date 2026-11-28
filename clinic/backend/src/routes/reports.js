@@ -118,49 +118,79 @@ export default function (app, { pool, q, need, audit, fail, wrap, clean }) {
   app.get('/api/dashboard/owner', need(), wrap(async (req, res) => {
     const c = req.user.clinic_id, P = req.perms, per = ['month', 'quarter', 'year'].includes(req.query.period) ? req.query.period : 'month', ref = D(req.query.date) || new Date().toLocaleDateString('en-CA', { timeZone: 'America/Port-au-Prince' })
     const span = { month: '1 month', quarter: '3 months', year: '1 year' }[per]
-    const { rows: [rg] } = await q(`select date_trunc('${per}',$1::date)::date::text f,(date_trunc('${per}',$1::date)+interval '${span}')::date::text n, to_char($1::date,'YYYY') y`, [ref])
-    const f = rg.f, t = (await q("select ($1::date - 1)::text t", [rg.n])).rows[0].t, one = async (s, p) => (await q(s, p)).rows[0], out = { period: { from: f, to: t, kind: per }, alerts: [] }
+    // Bornes de période calculées en une seule requête (f = début, t = dernier jour inclus, y = année)
+    const { rows: [rg] } = await q(`select date_trunc('${per}',$1::date)::date::text f,((date_trunc('${per}',$1::date)+interval '${span}')::date-1)::text t, to_char($1::date,'YYYY') y`, [ref])
+    const f = rg.f, t = rg.t, one = async (s, p) => (await q(s, p)).rows[0], out = { period: { from: f, to: t, kind: per }, alerts: [] }
     const n = async (s, p = [c]) => Object.values(await one(s, p))[0]
     const S = (tbl, col, extra, rangeCol, p = [c, f, t]) => n(`select coalesce(sum(${col}),0)::numeric(14,2)::text from ${tbl} where clinic_id=$1 ${extra} and ${BT(rangeCol)}`, p)
     const yr = [c, rg.y + '-01-01', rg.y + '-12-31']
-    if (P.has('view_all_patients') || P.has('manage_appointments')) {
-      const months = (await one('select active_patient_months m from clinics where id=$1', [c])).m
-      const pt = await one(`select count(*)::int total,count(*) filter (where status='active' and (registered_at>=current_date-make_interval(months=>$2) or exists(select 1 from consultations x where x.patient_id=p.id and x.consulted_at>=now()-make_interval(months=>$2))))::int active,count(*) filter (where registered_at between $3::date and $4::date)::int news from patients p where clinic_id=$1`, [c, months, f, t])
-      const ap = await one(`select count(*) filter (where starts_at>now() and status in ('planned','confirmed'))::int upcoming from appointments where clinic_id=$1`, [c])
-      out.medical = { patients_total: pt.total, patients_active: pt.active, patients_inactive: pt.total - pt.active, patients_new: pt.news, active_definition_months: months, appointments_upcoming: ap.upcoming,
-        consultations_today: await n(`select count(*)::int from consultations where clinic_id=$1 and ${L('consulted_at')}=${L('now()')}`), to_recall: await n("select count(*)::int from follow_up_reminders where clinic_id=$1 and status='pending' and due_date<=current_date"),
-        plans_in_progress: await n("select count(*)::int from treatment_plans where clinic_id=$1 and status in ('approved','in_progress')"), plans_done: await n("select count(*)::int from treatment_plans where clinic_id=$1 and status='done'"),
-        prostheses_in_progress: await n("select count(*)::int from prostheses where clinic_id=$1 and step<>'placed'") }
-      if (out.medical.to_recall) out.alerts.push({ level: 'warn', title: 'Patients à revoir', text: out.medical.to_recall + ' rappel(s) de suivi à traiter' }) }
-    if (P.has('view_finances')) {
+    const AL = {}   // alertes par bloc, assemblées dans un ordre déterministe après exécution parallèle
+    // ── Les blocs indépendants s'exécutent EN PARALLÈLE ; chaque bloc regroupe aussi ses requêtes en une vague ──
+    const jobs = []
+    if (P.has('view_all_patients') || P.has('manage_appointments')) jobs.push((async () => {
+      // 10 comptages médicaux fusionnés en UNE requête (sous-requêtes scalaires)
+      const mo = `make_interval(months=>(select active_patient_months from clinics where id=$1))`
+      const d = await one(`select
+        (select active_patient_months from clinics where id=$1)::int months,
+        (select count(*) from patients where clinic_id=$1)::int total,
+        (select count(*) from patients p where p.clinic_id=$1 and p.status='active' and (p.registered_at>=current_date-${mo} or exists(select 1 from consultations x where x.patient_id=p.id and x.consulted_at>=now()-${mo})))::int active,
+        (select count(*) from patients where clinic_id=$1 and registered_at between $2::date and $3::date)::int news,
+        (select count(*) from appointments where clinic_id=$1 and starts_at>now() and status in ('planned','confirmed'))::int upcoming,
+        (select count(*) from consultations where clinic_id=$1 and ${L('consulted_at')}=${L('now()')})::int consults_today,
+        (select count(*) from follow_up_reminders where clinic_id=$1 and status='pending' and due_date<=current_date)::int to_recall,
+        (select count(*) from treatment_plans where clinic_id=$1 and status in ('approved','in_progress'))::int plans_prog,
+        (select count(*) from treatment_plans where clinic_id=$1 and status='done')::int plans_done,
+        (select count(*) from prostheses where clinic_id=$1 and step<>'placed')::int pros_prog`, [c, f, t])
+      out.medical = { patients_total: d.total, patients_active: d.active, patients_inactive: d.total - d.active, patients_new: d.news, active_definition_months: d.months, appointments_upcoming: d.upcoming,
+        consultations_today: d.consults_today, to_recall: d.to_recall, plans_in_progress: d.plans_prog, plans_done: d.plans_done, prostheses_in_progress: d.pros_prog }
+      if (d.to_recall) AL.medical = [{ level: 'warn', title: 'Patients à revoir', text: d.to_recall + ' rappel(s) de suivi à traiter' }]
+    })())
+    if (P.has('view_finances')) jobs.push((async () => {
       const rev = (p) => S('payments', 'amount_htg', 'and voided_at is null', 'created_at', p), exp = p => S('expenses', 'amount_htg', "and status='paid'", 'paid_at', p)
-      const [rd, rp, ry, ep, ey, rec, deb, due] = await Promise.all([n(`select coalesce(sum(amount_htg),0)::numeric(14,2)::text from payments where clinic_id=$1 and voided_at is null and ${L('created_at')}=${L('now()')}`), rev([c, f, t]), rev(yr), exp([c, f, t]), exp(yr),
+      const [rd, rp, ry, ep, ey, rec, deb, due, cash, invoiced] = await Promise.all([
+        n(`select coalesce(sum(amount_htg),0)::numeric(14,2)::text from payments where clinic_id=$1 and voided_at is null and ${L('created_at')}=${L('now()')}`), rev([c, f, t]), rev(yr), exp([c, f, t]), exp(yr),
         n(`select coalesce(sum((i.total-${PAID})*case when i.currency='HTG' then 1 else coalesce(i.rate_htg_per_usd,0) end),0)::numeric(14,2)::text from invoices i where i.clinic_id=$1 and i.kind='invoice' and i.status='issued'`),
-        n(`select coalesce(sum(p.total_htg),0)::numeric(14,2)::text from purchases p where p.clinic_id=$1 and not ${PURCH_PAID}`), n("select coalesce(sum(net-paid),0)::numeric(14,2)::text from payroll_records where clinic_id=$1 and status<>'paid'")])
-      const cash = (await q(`select a.name,a.currency,(a.opening_balance+coalesce((select sum(case when m.kind in ('in','transfer_in') then m.amount else -m.amount end) from cash_movements m where m.account_id=a.id),0))::text balance from cash_accounts a where a.clinic_id=$1 and a.active order by a.created_at`, [c])).rows
+        n(`select coalesce(sum(p.total_htg),0)::numeric(14,2)::text from purchases p where p.clinic_id=$1 and not ${PURCH_PAID}`), n("select coalesce(sum(net-paid),0)::numeric(14,2)::text from payroll_records where clinic_id=$1 and status<>'paid'"),
+        q(`select a.name,a.currency,(a.opening_balance+coalesce((select sum(case when m.kind in ('in','transfer_in') then m.amount else -m.amount end) from cash_movements m where m.account_id=a.id),0))::text balance from cash_accounts a where a.clinic_id=$1 and a.active order by a.created_at`, [c]).then(r => r.rows),
+        n(`select coalesce(sum(case when currency='HTG' then total else total*coalesce(rate_htg_per_usd,0) end),0)::numeric(14,2)::text from invoices where clinic_id=$1 and kind='invoice' and status='issued' and ${BT('created_at')}`, [c, f, t])])
       const fin = (rev_, exp_) => (Number(rev_) - Number(exp_)).toFixed(2)
-      out.finance = { revenue_day: rd, revenue_period: rp, revenue_year: ry, expenses_period: ep, expenses_year: ey, profit_period: fin(rp, ep), profit_year: fin(ry, ey), receivables_htg: rec, supplier_debts_htg: deb, salaries_due: due, cash,
-        invoiced_period: await n(`select coalesce(sum(case when currency='HTG' then total else total*coalesce(rate_htg_per_usd,0) end),0)::numeric(14,2)::text from invoices where clinic_id=$1 and kind='invoice' and status='issued' and ${BT('created_at')}`, [c, f, t]) }
-      if (Number(rec) > 0) out.alerts.push({ level: 'warn', title: 'Créances patients', text: rec + ' HTG à recevoir' }); if (Number(deb) > 0) out.alerts.push({ level: 'warn', title: 'Dettes fournisseurs', text: deb + ' HTG à payer' }); if (Number(due) > 0) out.alerts.push({ level: 'warn', title: 'Salaires à payer', text: due + ' HTG restants' }) }
-    if (P.has('view_salaries')) out.staff = { ...(await one("select (select count(*) from users where clinic_id=$1 and status='active' and role in ('DENTIST','ADMIN_MEDICAL'))::int doctors,(select count(*) from employees where clinic_id=$1 and status='active')::int employees", [c])),
-      ...(await one("select coalesce(sum(net),0)::text payroll,coalesce(sum(commissions),0)::text commissions,coalesce(sum(paid),0)::text paid,coalesce(sum(net-paid),0)::text pending from payroll_records where clinic_id=$1 and period between to_char($2::date,'YYYY-MM') and to_char($3::date,'YYYY-MM')", [c, f, t])) }
-    if (P.has('manage_inventory')) {
-      const st = await one(`select coalesce(sum(l.qty_remaining*l.unit_cost_htg),0)::numeric(14,2)::text value,(select count(*) from product_lots where clinic_id=$1 and qty_remaining>0 and expiry<current_date)::int expired,(select count(*) from product_lots where clinic_id=$1 and qty_remaining>0 and expiry between current_date and current_date+60)::int near from product_lots l where l.clinic_id=$1`, [c])
-      const low = (await q("select name,stock::text,min_stock::text from (select p.name,p.min_stock,coalesce(sum(l.qty_remaining) filter (where l.expiry is null or l.expiry>=current_date),0) stock from products p left join product_lots l on l.product_id=p.id where p.clinic_id=$1 group by p.id) t where stock<=min_stock order by name", [c])).rows
-      out.stock = { ...st, out: low.filter(x => Number(x.stock) === 0).length, low: low.length, low_items: low.slice(0, 8), purchases_period: await S('purchases', 'total_htg', '', 'created_at'), consumption_period: await n(`select coalesce(sum(-qty*unit_cost_htg),0)::numeric(14,2)::text from stock_movements where clinic_id=$1 and type='consume' and ${BT('created_at')}`, [c, f, t]) }
-      for (const x of low.slice(0, 4)) out.alerts.push({ level: 'warn', title: x.name, text: `Stock : ${x.stock} (seuil : ${x.min_stock})` }); if (st.expired) out.alerts.push({ level: 'err', title: 'Produits expirés', text: st.expired + ' lot(s) expiré(s) en stock' }); if (st.near) out.alerts.push({ level: 'warn', title: 'Péremption proche', text: st.near + ' lot(s) expirent sous 60 jours' }) }
-    if (P.has('approve_purchases')) { const k = await n("select count(*)::int from purchase_requests where clinic_id=$1 and status='pending'"); if (k) out.alerts.push({ level: 'warn', title: "Demandes d'achat en attente", text: k + ' demande(s) à traiter' }) }
-    if (P.has('view_audit_logs')) { const k = (await one("select count(*)::int n from notifications x where x.clinic_id=$1 and x.perm='view_audit_logs' and x.created_at>now()-interval '7 days' and not exists(select 1 from notification_reads r where r.notification_id=x.id and r.user_id=$2)", [c, req.user.id])).n; if (k) out.alerts.push({ level: 'err', title: 'Alertes de sécurité', text: k + ' nouvelle(s) alerte(s) cette semaine' }) }
+      out.finance = { revenue_day: rd, revenue_period: rp, revenue_year: ry, expenses_period: ep, expenses_year: ey, profit_period: fin(rp, ep), profit_year: fin(ry, ey), receivables_htg: rec, supplier_debts_htg: deb, salaries_due: due, cash, invoiced_period: invoiced }
+      const a = []; if (Number(rec) > 0) a.push({ level: 'warn', title: 'Créances patients', text: rec + ' HTG à recevoir' }); if (Number(deb) > 0) a.push({ level: 'warn', title: 'Dettes fournisseurs', text: deb + ' HTG à payer' }); if (Number(due) > 0) a.push({ level: 'warn', title: 'Salaires à payer', text: due + ' HTG restants' }); AL.finance = a
+    })())
+    if (P.has('view_salaries')) jobs.push((async () => {
+      const [a, b] = await Promise.all([one("select (select count(*) from users where clinic_id=$1 and status='active' and role in ('DENTIST','ADMIN_MEDICAL'))::int doctors,(select count(*) from employees where clinic_id=$1 and status='active')::int employees", [c]),
+        one("select coalesce(sum(net),0)::text payroll,coalesce(sum(commissions),0)::text commissions,coalesce(sum(paid),0)::text paid,coalesce(sum(net-paid),0)::text pending from payroll_records where clinic_id=$1 and period between to_char($2::date,'YYYY-MM') and to_char($3::date,'YYYY-MM')", [c, f, t])])
+      out.staff = { ...a, ...b }
+    })())
+    if (P.has('manage_inventory')) jobs.push((async () => {
+      const [st, low, purchases_period, consumption_period] = await Promise.all([
+        one(`select coalesce(sum(l.qty_remaining*l.unit_cost_htg),0)::numeric(14,2)::text value,(select count(*) from product_lots where clinic_id=$1 and qty_remaining>0 and expiry<current_date)::int expired,(select count(*) from product_lots where clinic_id=$1 and qty_remaining>0 and expiry between current_date and current_date+60)::int near from product_lots l where l.clinic_id=$1`, [c]),
+        q("select name,stock::text,min_stock::text from (select p.name,p.min_stock,coalesce(sum(l.qty_remaining) filter (where l.expiry is null or l.expiry>=current_date),0) stock from products p left join product_lots l on l.product_id=p.id where p.clinic_id=$1 group by p.id) t where stock<=min_stock order by name", [c]).then(r => r.rows),
+        S('purchases', 'total_htg', '', 'created_at'),
+        n(`select coalesce(sum(-qty*unit_cost_htg),0)::numeric(14,2)::text from stock_movements where clinic_id=$1 and type='consume' and ${BT('created_at')}`, [c, f, t])])
+      out.stock = { ...st, out: low.filter(x => Number(x.stock) === 0).length, low: low.length, low_items: low.slice(0, 8), purchases_period, consumption_period }
+      const a = []; for (const x of low.slice(0, 4)) a.push({ level: 'warn', title: x.name, text: `Stock : ${x.stock} (seuil : ${x.min_stock})` }); if (st.expired) a.push({ level: 'err', title: 'Produits expirés', text: st.expired + ' lot(s) expiré(s) en stock' }); if (st.near) a.push({ level: 'warn', title: 'Péremption proche', text: st.near + ' lot(s) expirent sous 60 jours' }); AL.stock = a
+    })())
+    if (P.has('approve_purchases')) jobs.push((async () => { const k = await n("select count(*)::int from purchase_requests where clinic_id=$1 and status='pending'"); if (k) AL.purchases = [{ level: 'warn', title: "Demandes d'achat en attente", text: k + ' demande(s) à traiter' }] })())
+    if (P.has('view_audit_logs')) jobs.push((async () => { const k = (await one("select count(*)::int n from notifications x where x.clinic_id=$1 and x.perm='view_audit_logs' and x.created_at>now()-interval '7 days' and not exists(select 1 from notification_reads r where r.notification_id=x.id and r.user_id=$2)", [c, req.user.id])).n; if (k) AL.audit = [{ level: 'err', title: 'Alertes de sécurité', text: k + ' nouvelle(s) alerte(s) cette semaine' }] })())
+    await Promise.all(jobs)
+    for (const key of ['medical', 'finance', 'stock', 'purchases', 'audit']) if (AL[key]) out.alerts.push(...AL[key])
+    // ── Graphiques (toutes les requêtes en parallèle) ──
     const m6 = `generate_series(date_trunc('month',current_date)-interval '5 month',date_trunc('month',current_date),interval '1 month') m`
-    const ch = out.charts = {}
-    if (out.finance) { ch.revenue_6m = (await q(`select to_char(m,'YYYY-MM') m,coalesce(sum(y.amount_htg),0)::float v from ${m6} left join payments y on y.clinic_id=$1 and y.voided_at is null and date_trunc('month',y.created_at at time zone ${TZ})=m group by m order by m`, [c])).rows
-      ch.expenses_6m = (await q(`select to_char(m,'YYYY-MM') m,coalesce(sum(e.amount_htg),0)::float v from ${m6} left join expenses e on e.clinic_id=$1 and e.status='paid' and date_trunc('month',e.paid_at at time zone ${TZ})=m group by m order by m`, [c])).rows
-      ch.profit_6m = ch.revenue_6m.map((r, i) => ({ m: r.m, v: r.v - ch.expenses_6m[i].v }))
-      ch.expense_breakdown = (await q(`select category label,sum(amount_htg)::float v from expenses where clinic_id=$1 and status='paid' and ${BT('paid_at')} group by category order by v desc`, [c, f, t])).rows }
-    if (out.medical) { ch.patients_6m = (await q(`select to_char(m,'YYYY-MM') m,count(p.id)::int v from ${m6} left join patients p on p.clinic_id=$1 and date_trunc('month',p.registered_at)=m group by m order by m`, [c])).rows
-      ch.consult_by_doctor = (await q(`select u.first_name||' '||u.last_name label,count(*)::int v from consultations x join users u on u.id=x.doctor_id where x.clinic_id=$1 and ${BT('x.consulted_at')} group by u.id order by v desc limit 8`, [c, f, t])).rows
-      ch.prosthesis_types = (await q('select t.name label,count(*)::int v from prostheses x join prosthesis_types t on t.id=x.type_id where x.clinic_id=$1 group by t.name order by v desc', [c])).rows
-      ch.clinical_activity = [{ label: 'Plans terminés', v: out.medical.plans_done }, { label: 'Plans en cours', v: out.medical.plans_in_progress }, { label: 'Prothèses en cours', v: out.medical.prostheses_in_progress }] }
-    if (out.stock) ch.consumption_top = (await q(`select pr.name label,sum(-m.qty*m.unit_cost_htg)::float v from stock_movements m join products pr on pr.id=m.product_id where m.clinic_id=$1 and m.type='consume' and ${BT('m.created_at')} group by pr.name order by v desc limit 5`, [c, f, t])).rows
+    const ch = out.charts = {}, cj = []
+    if (out.finance) {
+      cj.push(q(`select to_char(m,'YYYY-MM') m,coalesce(sum(y.amount_htg),0)::float v from ${m6} left join payments y on y.clinic_id=$1 and y.voided_at is null and date_trunc('month',y.created_at at time zone ${TZ})=m group by m order by m`, [c]).then(r => ch.revenue_6m = r.rows),
+        q(`select to_char(m,'YYYY-MM') m,coalesce(sum(e.amount_htg),0)::float v from ${m6} left join expenses e on e.clinic_id=$1 and e.status='paid' and date_trunc('month',e.paid_at at time zone ${TZ})=m group by m order by m`, [c]).then(r => ch.expenses_6m = r.rows),
+        q(`select category label,sum(amount_htg)::float v from expenses where clinic_id=$1 and status='paid' and ${BT('paid_at')} group by category order by v desc`, [c, f, t]).then(r => ch.expense_breakdown = r.rows))
+    }
+    if (out.medical) {
+      cj.push(q(`select to_char(m,'YYYY-MM') m,count(p.id)::int v from ${m6} left join patients p on p.clinic_id=$1 and date_trunc('month',p.registered_at)=m group by m order by m`, [c]).then(r => ch.patients_6m = r.rows),
+        q(`select u.first_name||' '||u.last_name label,count(*)::int v from consultations x join users u on u.id=x.doctor_id where x.clinic_id=$1 and ${BT('x.consulted_at')} group by u.id order by v desc limit 8`, [c, f, t]).then(r => ch.consult_by_doctor = r.rows),
+        q('select t.name label,count(*)::int v from prostheses x join prosthesis_types t on t.id=x.type_id where x.clinic_id=$1 group by t.name order by v desc', [c]).then(r => ch.prosthesis_types = r.rows))
+    }
+    if (out.stock) cj.push(q(`select pr.name label,sum(-m.qty*m.unit_cost_htg)::float v from stock_movements m join products pr on pr.id=m.product_id where m.clinic_id=$1 and m.type='consume' and ${BT('m.created_at')} group by pr.name order by v desc limit 5`, [c, f, t]).then(r => ch.consumption_top = r.rows))
+    await Promise.all(cj)
+    if (out.finance) ch.profit_6m = ch.revenue_6m.map((r, i) => ({ m: r.m, v: r.v - ch.expenses_6m[i].v }))
+    if (out.medical) ch.clinical_activity = [{ label: 'Plans terminés', v: out.medical.plans_done }, { label: 'Plans en cours', v: out.medical.plans_in_progress }, { label: 'Prothèses en cours', v: out.medical.prostheses_in_progress }]
     res.json(out) }))
 }
